@@ -1,0 +1,383 @@
+{% extends "base.html" %}
+
+{% block title %} - Barangays Management{% endblock %}
+
+{% block content %}
+<div class="container-fluid p-4">
+    <div class="row mb-4">
+        <div class="col-md-6">
+            <h2>Barangays Management</h2>
+            <p class="text-muted">Monitor and manage flood-affected areas</p>
+        </div>
+        <div class="col-md-6">
+            <form method="get" action="{% url 'barangays_page' %}" id="search-form" class="d-flex flex-wrap justify-content-md-end align-items-center gap-2">
+                <div class="input-group" style="max-width: 250px;">
+                    {{ form.name }}
+                    <button class="btn btn-primary" type="submit">
+                        <i class="fas fa-search"></i>
+                    </button>
+                </div>
+                
+                <div style="width: 150px;">
+                    {{ form.severity_level }}
+                </div>
+            </form>
+        </div>
+    </div>
+    
+    <!-- Municipality Selector -->
+    <div class="card shadow-sm mb-4">
+        <div class="card-header bg-primary text-white">
+            <h5 class="mb-0"><i class="fas fa-building me-2"></i>Select Municipality</h5>
+        </div>
+        <div class="card-body">
+            <div class="row align-items-center">
+                <div class="col-md-6">
+                    <p>Select a municipality to view all its registered barangays:</p>
+                </div>
+                <div class="col-md-6">
+                    <select id="municipality-select" class="form-select">
+                        <option value="">-- Select Municipality --</option>
+                        <!-- Options will be populated via JavaScript -->
+                    </select>
+                </div>
+            </div>
+            <div class="row mt-3 align-items-center">
+                <div class="col-md-6">
+                    <p>Select a barangay to center and highlight on the map:</p>
+                </div>
+                <div class="col-md-6">
+                    <select id="barangay-select" class="form-select" disabled>
+                        <option value="">-- All Barangays --</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Barangay Cards Container -->
+    <div class="card shadow-sm mb-4">
+        <div class="card-header bg-primary text-white">
+            <div class="d-flex justify-content-between align-items-center">
+                <h5 class="mb-0"><i class="fas fa-map-marked-alt me-2"></i>Barangay Cards</h5>
+            </div>
+        </div>
+        <div class="card-body">
+            <div id="barangay-cards-container" class="row">
+                <div class="col-12 text-center py-5">
+                    <p class="text-muted">Please select a municipality to view its barangays</p>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Barangays Data Table -->
+    <div class="card shadow-sm mb-4">
+        <div class="card-header bg-primary text-white">
+            <div class="d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">
+                    <i class="fas fa-map-marked-alt me-2"></i>Barangays
+                </h5>
+                <div>
+                    <span class="badge bg-secondary">Total: {{ barangays.count }}</span>
+                </div>
+            </div>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Barangay Name</th>
+                            <th class="text-center">Population</th>
+                            <th class="text-center">Flood Severity</th>
+                            <th>Contact Person</th>
+                            <th class="text-center">Contact Number</th>
+                            <th class="text-center">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% if barangays %}
+                            {% for barangay in barangays %}
+                                <tr>
+                                    <td>
+                                        <a href="{% url 'barangay_detail' barangay.id %}" class="text-decoration-none fw-bold">
+                                            {{ barangay.name }}
+                                        </a>
+                                    </td>
+                                    <td class="text-center">{{ barangay.population }}</td>
+                                    <td class="text-center">
+                                        {% with severity=barangay.flood_alerts.all|dictsort:"severity_level"|last %}
+                                            {% if severity %}
+                                                {% if severity.severity_level == 5 %}
+                                                    <span class="badge rounded-pill bg-danger">Catastrophic</span>
+                                                {% elif severity.severity_level == 4 %}
+                                                    <span class="badge rounded-pill bg-danger">Emergency</span>
+                                                {% elif severity.severity_level == 3 %}
+                                                    <span class="badge rounded-pill bg-warning">Warning</span>
+                                                {% elif severity.severity_level == 2 %}
+                                                    <span class="badge rounded-pill bg-warning">Watch</span>
+                                                {% elif severity.severity_level == 1 %}
+                                                    <span class="badge rounded-pill bg-info">Advisory</span>
+                                                {% endif %}
+                                            {% else %}
+                                                <span class="badge rounded-pill bg-success">Normal</span>
+                                            {% endif %}
+                                        {% endwith %}
+                                    </td>
+                                    <td>{{ barangay.contact_person|default:"--" }}</td>
+                                    <td class="text-center">{{ barangay.contact_number|default:"--" }}</td>
+                                    <td class="text-center">
+                                        <a href="{% url 'barangay_detail' barangay.id %}" class="btn btn-sm btn-outline-primary">
+                                            <i class="fas fa-eye me-1"></i> View
+                                        </a>
+                                    </td>
+                                </tr>
+                            {% endfor %}
+                        {% else %}
+                            <tr>
+                                <td colspan="6" class="text-center py-4">No barangays found matching your filters.</td>
+                            </tr>
+                        {% endif %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Map Overview -->
+    <div class="card shadow-sm">
+        <div class="card-header bg-primary text-white">
+            <h5 class="mb-0">
+                <i class="fas fa-map me-2"></i>Barangays Map Overview
+            </h5>
+        </div>
+        <div class="card-body p-0">
+            <div id="barangays-map" style="height: 500px;"></div>
+        </div>
+        <div class="card-footer">
+            <div class="row">
+                <div class="col-md-6">
+                    <div class="map-legend">
+                        <span class="me-3"><i class="fas fa-circle text-success me-1"></i> Normal</span>
+                        <span class="me-3"><i class="fas fa-circle text-info me-1"></i> Advisory</span>
+                        <span class="me-3"><i class="fas fa-circle text-warning me-1"></i> Watch/Warning</span>
+                        <span class="me-3"><i class="fas fa-circle text-danger me-1"></i> Emergency</span>
+                    </div>
+                </div>
+                <div class="col-md-6 text-md-end">
+                    <small class="text-muted">Click on a barangay marker for more details</small>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Flood History -->
+    <div class="card shadow-sm mb-4">
+        <div class="card-header bg-primary text-white">
+            <h5 class="mb-0">
+                <i class="fas fa-history me-2"></i>Flood History for <span id="history-location-name">Selected Area</span>
+            </h5>
+        </div>
+        <div class="card-body">
+            <div class="row mb-3 g-2">
+                <div class="col-md-8">
+                    <input type="text" id="history-search-input" class="form-control" placeholder="Search by alert title or description...">
+                </div>
+                <div class="col-md-4">
+                    <select id="history-severity-filter" class="form-select">
+                        <option value="">All Severities</option>
+                        <option value="5">Catastrophic</option>
+                        <option value="4">Emergency</option>
+                        <option value="3">Warning</option>
+                        <option value="2">Watch</option>
+                        <option value="1">Advisory</option>
+                    </select>
+                </div>
+            </div>
+            <div id="flood-history-container" class="table-responsive">
+                <table class="table table-striped">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Severity</th>
+                            <th>Description</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody id="flood-history-body">
+                        <tr>
+                            <td colspan="4" class="text-center py-4 text-muted">
+                                Select a municipality or barangay to view its flood history.
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            <nav id="history-pagination" class="d-none">
+                <ul class="pagination justify-content-center">
+                    <!-- Pagination links will be inserted here -->
+                </ul>
+            </nav>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="/static/js/barangays.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const municipalitySelect = document.getElementById('municipality-select');
+    const barangaySelect = document.getElementById('barangay-select');
+    const historyLocationName = document.getElementById('history-location-name');
+    const historySearchInput = document.getElementById('history-search-input');
+    const historySeverityFilter = document.getElementById('history-severity-filter');
+    let searchDebounceTimer;
+
+    function updateHistoryView() {
+        const barangayId = barangaySelect.value;
+        const municipalityId = municipalitySelect.value;
+        const searchQuery = historySearchInput.value;
+        const severityFilter = historySeverityFilter.value;
+
+        const params = {
+            search: searchQuery,
+            severity: severityFilter
+        };
+
+        if (barangayId) {
+            historyLocationName.textContent = barangaySelect.options[barangaySelect.selectedIndex].text;
+            params.barangayId = barangayId;
+            loadFloodHistory(params);
+        } else if (municipalityId) {
+            historyLocationName.textContent = municipalitySelect.options[municipalitySelect.selectedIndex].text;
+            params.municipalityId = municipalityId;
+            loadFloodHistory(params);
+        } else {
+            historyLocationName.textContent = 'Selected Area';
+            document.getElementById('flood-history-body').innerHTML = '<tr><td colspan="4" class="text-center py-4 text-muted">Select a municipality or barangay to view its flood history.</td></tr>';
+            document.getElementById('history-pagination').classList.add('d-none');
+        }
+    }
+
+    municipalitySelect.addEventListener('change', updateHistoryView);
+    barangaySelect.addEventListener('change', updateHistoryView);
+
+    historySearchInput.addEventListener('input', () => {
+        clearTimeout(searchDebounceTimer);
+        searchDebounceTimer = setTimeout(updateHistoryView, 400); // Debounce search
+    });
+
+    historySeverityFilter.addEventListener('change', updateHistoryView);
+
+    // Initial load if a selection is already present
+    updateHistoryView();
+});
+
+function loadFloodHistory({ municipalityId, barangayId, search = '', severity = '', page = 1 }) {
+    const historyBody = document.getElementById('flood-history-body');
+    const paginationNav = document.getElementById('history-pagination');
+    historyBody.innerHTML = '<tr><td colspan="4" class="text-center py-4"><div class="spinner-border spinner-border-sm" role="status"></div> Loading history...</td></tr>';
+    paginationNav.classList.add('d-none');
+
+    let url = `/api/flood-history/?page=${page}`;
+    if (barangayId) {
+        url += `&barangay_id=${barangayId}`;
+    } else if (municipalityId) {
+        url += `&municipality_id=${municipalityId}`;
+    }
+    if (search) {
+        url += `&search=${encodeURIComponent(search)}`;
+    }
+    if (severity) {
+        url += `&severity=${encodeURIComponent(severity)}`;
+    }
+
+    fetch(url)
+        .then(response => response.json())
+        .then(data => {
+            if (data.history && data.history.length > 0) {
+                historyBody.innerHTML = data.history.map(alert => {
+                    let severityBadge;
+                    switch(alert.severity_level) {
+                        case 5: severityBadge = '<span class="badge rounded-pill bg-danger">Catastrophic</span>'; break;
+                        case 4: severityBadge = '<span class="badge rounded-pill bg-danger">Emergency</span>'; break;
+                        case 3: severityBadge = '<span class="badge rounded-pill bg-warning">Warning</span>'; break;
+                        case 2: severityBadge = '<span class="badge rounded-pill bg-info text-dark">Watch</span>'; break;
+                        case 1: severityBadge = '<span class="badge rounded-pill bg-info text-dark">Advisory</span>'; break;
+                        default: severityBadge = '<span class="badge rounded-pill bg-secondary">Unknown</span>'; break;
+                    }
+                    const statusBadge = alert.is_active 
+                        ? '<span class="badge bg-success">Active</span>' 
+                        : '<span class="badge bg-secondary">Inactive</span>';
+
+                    return `
+                        <tr>
+                            <td>${alert.issued_at}</td>
+                            <td>${severityBadge}</td>
+                            <td>${escapeHtml(alert.title)}</td>
+                            <td>${statusBadge}</td>
+                        </tr>
+                    `;
+                }).join('');
+
+                renderPagination(data.pagination, { municipalityId, barangayId, search, severity });
+            } else {
+                historyBody.innerHTML = '<tr><td colspan="4" class="text-center py-4 text-muted">No flood history found for this location.</td></tr>';
+            }
+        })
+        .catch(error => {
+            console.error('Error fetching flood history:', error);
+            historyBody.innerHTML = '<tr><td colspan="4" class="text-center py-4 text-danger">Failed to load flood history.</td></tr>';
+        });
+}
+
+function renderPagination(pagination, params) {
+    const paginationUl = document.querySelector('#history-pagination .pagination');
+    if (!paginationUl) return;
+
+    paginationUl.innerHTML = '';
+    if (pagination.total_pages <= 1) {
+        document.getElementById('history-pagination').classList.add('d-none');
+        return;
+    }
+
+    document.getElementById('history-pagination').classList.remove('d-none');
+
+    const createPageItem = (page, text, isDisabled = false, isActive = false) => {
+        const li = document.createElement('li');
+        li.className = `page-item ${isDisabled ? 'disabled' : ''} ${isActive ? 'active' : ''}`;
+        const a = document.createElement('a');
+        a.className = 'page-link';
+        a.href = '#';
+        a.textContent = text;
+        if (!isDisabled) {
+            a.onclick = (e) => {
+                e.preventDefault();
+                loadFloodHistory({ ...params, page });
+            };
+        }
+        li.appendChild(a);
+        return li;
+    };
+
+    paginationUl.appendChild(createPageItem(pagination.previous_page_number, 'Previous', !pagination.has_previous));
+
+    for (let i = 1; i <= pagination.total_pages; i++) {
+        paginationUl.appendChild(createPageItem(i, i, false, i === pagination.current_page));
+    }
+
+    paginationUl.appendChild(createPageItem(pagination.next_page_number, 'Next', !pagination.has_next));
+}
+
+function escapeHtml(unsafe) {
+    return unsafe
+         .replace(/&/g, "&amp;")
+         .replace(/</g, "&lt;")
+         .replace(/>/g, "&gt;")
+         .replace(/"/g, "&quot;")
+         .replace(/'/g, "&#039;");
+}
+</script>
+{% endblock %}
