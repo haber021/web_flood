@@ -144,6 +144,12 @@ def dashboard(request):
     
     # Get flood risk zones for map
     flood_zones = FloodRiskZone.objects.all()
+
+    # Get all barangays but limit for dashboard display to avoid a very long card.
+    # Default dashboard shows the first 10 barangays ordered by name.
+    all_barangays_qs = Barangay.objects.all().order_by('name')
+    barangays_total = all_barangays_qs.count()
+    barangays = list(all_barangays_qs[:10])
     
     context = {
         'latest_temperature': latest_temperature,
@@ -154,6 +160,9 @@ def dashboard(request):
         'active_alerts': active_alerts,
         'sensors': sensors,
         'flood_zones': flood_zones,
+    'barangays': barangays,
+    'barangays_total': barangays_total,
+    'barangays_limited': True,
         'page': 'dashboard',
         # Server-rendered Manila time for the header (24-hour)
         'current_time_manila': _manila_str(timezone.now(), include_seconds=True, include_date=True)
@@ -214,31 +223,38 @@ def create_alert(request):
             # Save many-to-many relationships
             form.save_m2m()
 
-            # Check SMS configuration before dispatching
-            import os
-            from dotenv import load_dotenv
-            load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env'))
-            sms_enabled = os.getenv('SMS_ENABLED', 'true').lower() == 'true'
+            # Check if notifications should be sent immediately or scheduled
+            from django.utils import timezone
+            current_time = timezone.now()
 
-            if sms_enabled:
-                # Dispatch notifications to affected contacts
-                dispatch_notifications_for_alert(alert)
-
-                # Check notification results
-                from .models import NotificationLog
-                sms_logs = NotificationLog.objects.filter(alert=alert, notification_type='sms')
-                sent_count = sms_logs.filter(status='sent').count()
-                failed_count = sms_logs.filter(status='failed').count()
-                pending_count = sms_logs.filter(status='pending').count()
-
-                if failed_count > 0:
-                    messages.warning(request, f"Alert created successfully! {sent_count} SMS sent, {failed_count} failed (possible rate limits or insufficient credits). Your Twilio credentials are valid but may have reached daily limits.")
-                elif pending_count > 0:
-                    messages.success(request, f"Alert created successfully! SMS notifications are pending (SMS currently disabled). Your Twilio credentials are valid and ready to send messages.")
-                else:
-                    messages.success(request, f"Alert created successfully! {sent_count} SMS notifications sent to barangay contacts. Your Twilio credentials are valid and working properly.")
+            if alert.scheduled_send_time and alert.scheduled_send_time > current_time:
+                messages.success(request, f"Alert created successfully! Notifications will be sent at {alert.scheduled_send_time.strftime('%Y-%m-%d %H:%M')}.")
             else:
-                messages.success(request, "Alert created successfully! SMS notifications are currently disabled. Your Twilio credentials are valid and ready to send messages when enabled.")
+                # Check SMS configuration before dispatching
+                import os
+                from dotenv import load_dotenv
+                load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '.env'))
+                sms_enabled = os.getenv('SMS_ENABLED', 'true').lower() == 'true'
+
+                if sms_enabled:
+                    # Dispatch notifications to affected contacts
+                    dispatch_notifications_for_alert(alert)
+
+                    # Check notification results
+                    from .models import NotificationLog
+                    sms_logs = NotificationLog.objects.filter(alert=alert, notification_type='sms')
+                    sent_count = sms_logs.filter(status='sent').count()
+                    failed_count = sms_logs.filter(status='failed').count()
+                    pending_count = sms_logs.filter(status='pending').count()
+
+                    if failed_count > 0:
+                        messages.warning(request, f"Alert created successfully! {sent_count} SMS sent, {failed_count} failed (possible rate limits or insufficient credits). Your Twilio credentials are valid but may have reached daily limits.")
+                    elif pending_count > 0:
+                        messages.success(request, f"Alert created successfully! SMS notifications are pending (SMS currently disabled). Your Twilio credentials are valid and ready to send messages.")
+                    else:
+                        messages.success(request, f"Alert created successfully! {sent_count} SMS notifications sent to barangay contacts. Your Twilio credentials are valid and working properly.")
+                else:
+                    messages.success(request, "Alert created successfully! SMS notifications are currently disabled. Your Twilio credentials are valid and ready to send messages when enabled.")
 
             return redirect('prediction_page')
         else:
@@ -319,8 +335,8 @@ def notifications_page(request):
     # Get notification logs (latest 10 only)
     notifications = NotificationLog.objects.all().order_by('-sent_at')[:10]
 
-    # Get emergency contacts
-    contacts = EmergencyContact.objects.all()
+    # Get emergency contacts with related barangay and municipality data
+    contacts = EmergencyContact.objects.select_related('barangay__municipality').all()
 
     # Calculate analytics for all notifications (not just the displayed 10)
     all_notifications = NotificationLog.objects.all()
@@ -348,6 +364,147 @@ def notifications_page(request):
     }
 
     return render(request, 'notifications.html', context)
+
+@login_required
+def toggle_alert(request, alert_id):
+    """Toggle the active status of an alert"""
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'Authentication required'}, status=401)
+
+    if request.method == 'POST':
+        # Get the alert or return 404 if not found
+        alert = get_object_or_404(FloodAlert, id=alert_id)
+
+        # Toggle the active status
+        alert.active = not alert.active
+        alert.save()
+
+        # Add a success message
+        status = 'activated' if alert.active else 'deactivated'
+        messages.success(request, f'Alert "{alert.title}" has been {status}.')
+
+        # Redirect back to the notifications page
+        return redirect('notifications_page')
+
+    return JsonResponse({'error': 'Invalid request method'}, status=405)
+
+@login_required
+def api_toggle_alert(request, alert_id):
+    """API endpoint to get alert details (GET) or toggle alert active status (PATCH) via AJAX"""
+    if not request.user.is_authenticated:
+        return JsonResponse({'success': False, 'message': 'Authentication required'}, status=401)
+
+    try:
+        alert = get_object_or_404(FloodAlert, id=alert_id)
+
+        if request.method == 'GET':
+            # Return alert details
+            return JsonResponse({
+                'id': alert.id,
+                'title': alert.title,
+                'description': alert.description,
+                'severity_level': alert.severity_level,
+                'active': alert.active,
+                'predicted_flood_time': alert.predicted_flood_time,
+                'issued_at': alert.issued_at,
+                'updated_at': alert.updated_at,
+                'issued_by_username': alert.issued_by.username if alert.issued_by else 'System',
+                'affected_barangay_count': alert.affected_barangays.count(),
+                'affected_barangays': list(alert.affected_barangays.values_list('id', flat=True))
+            })
+
+        elif request.method == 'PATCH':
+            # Parse JSON data
+            import json
+            data = json.loads(request.body)
+
+            # Update active status if provided
+            if 'active' in data:
+                alert.active = bool(data['active'])
+                alert.save()
+
+                status = 'activated' if alert.active else 'deactivated'
+                return JsonResponse({
+                    'success': True,
+                    'message': f'Alert "{alert.title}" has been {status}.',
+                    'alert': {
+                        'id': alert.id,
+                        'active': alert.active,
+                        'title': alert.title
+                    }
+                })
+
+            return JsonResponse({'success': False, 'message': 'No valid fields to update'}, status=400)
+
+        else:
+            return JsonResponse({'success': False, 'message': 'Method not allowed'}, status=405)
+
+    except json.JSONDecodeError:
+        return JsonResponse({'success': False, 'message': 'Invalid JSON data'}, status=400)
+    except Exception as e:
+        return JsonResponse({'success': False, 'message': str(e)}, status=500)
+
+@login_required
+def delete_all_alerts(request):
+    """Delete all flood alerts"""
+    if not request.user.is_authenticated:
+        return JsonResponse({'error': 'Authentication required'}, status=401)
+
+    if request.method == 'POST':
+        # Only allow admins and managers to delete all alerts
+        if not is_admin_or_manager(request.user):
+            return JsonResponse({'error': 'Permission denied'}, status=403)
+
+        # Delete all alerts
+        count, _ = FloodAlert.objects.all().delete()
+        return JsonResponse({'success': True, 'message': f'Successfully deleted {count} alerts.'})
+
+    return JsonResponse({'error': 'Invalid request method'}, status=405)
+
+@login_required
+def auto_send_alerts(request):
+    """Automatically send alerts based on threshold evaluation"""
+    if request.method == 'POST':
+        try:
+            # Import and run the threshold evaluation command
+            from django.core.management import call_command
+            from io import StringIO
+            import re
+
+            # Capture command output
+            output = StringIO()
+            call_command('apply_thresholds_all', stdout=output, verbosity=1)
+
+            # Parse the output to get statistics
+            output_str = output.getvalue()
+
+            # Parse the final summary line: "Done. Barangays processed: X. Created: Y, Updated: Z."
+            match = re.search(r'Barangays processed: (\d+)\. Created: (\d+), Updated: (\d+)\.', output_str)
+            if match:
+                barangays_processed = int(match.group(1))
+                alerts_created = int(match.group(2))
+                alerts_updated = int(match.group(3))
+            else:
+                # Fallback if parsing fails
+                barangays_processed = 0
+                alerts_created = 0
+                alerts_updated = 0
+
+            return JsonResponse({
+                'success': True,
+                'message': f'Processed {barangays_processed} barangays. Created {alerts_created}, updated {alerts_updated} alerts.',
+                'alerts_created': alerts_created,
+                'alerts_updated': alerts_updated,
+                'barangays_processed': barangays_processed
+            })
+
+        except Exception as e:
+            return JsonResponse({
+                'success': False,
+                'message': f'Error processing automatic alerts: {str(e)}'
+            }, status=500)
+    else:
+        return JsonResponse({'success': False, 'message': 'POST method required'}, status=405)
 
 @login_required
 def config_page(request):
@@ -434,7 +591,7 @@ def get_chart_data(request):
     municipality_id = request.GET.get('municipality_id')
     barangay_id = request.GET.get('barangay_id')
     
-    # Base queryset with optional location filters
+    # Base queryset with location filters
     base_filters = {
         'sensor__sensor_type': chart_type,
     }
@@ -443,69 +600,26 @@ def get_chart_data(request):
     if barangay_id:
         base_filters['sensor__barangay_id'] = barangay_id
 
-    # Determine the most specific sensor query set based on filters
-    sensor_qs = Sensor.objects.filter(sensor_type=chart_type)
-    if barangay_id:
-        sensor_qs = sensor_qs.filter(barangay_id=barangay_id)
-    elif municipality_id:
-        sensor_qs = sensor_qs.filter(municipality_id=municipality_id)
-
     if limit and limit > 0:
-        # Limit mode: choose a single representative sensor (with most recent reading)
-        # to avoid mixing multiple sensors in one line chart.
-
-        # Pick the sensor with the most recent reading
-        try:
-            top_sensor = (
-                sensor_qs
-                .annotate(last_ts=Max('sensordata__timestamp'))
-                .order_by('-last_ts')
-                .first()
-            )
-        except Exception:
-            top_sensor = None
-
-        if top_sensor:
-            qs = SensorData.objects.filter(sensor=top_sensor).order_by('-timestamp')
-        else:
-            qs = SensorData.objects.filter(sensor__sensor_type=chart_type).order_by('-timestamp')
-
+        # Limit mode: get latest N readings from ALL sensors in the barangay
+        qs = SensorData.objects.filter(**base_filters).order_by('-timestamp')
         rows = list(qs[:limit])
         rows.reverse()  # chronological order for chart
         data = rows
     else:
-        # Range mode: last `days`
+        # Range mode: last `days` from ALL sensors in the barangay
         end_date = timezone.now()
         start_date = end_date - timedelta(days=days)
-
-        try:
-            top_sensor = (
-                sensor_qs
-                .annotate(last_ts=Max('sensordata__timestamp'))
-                .order_by('-last_ts')
-                .first()
-            )
-        except Exception:
-            top_sensor = None
-
-        if top_sensor:
-            filters = {
-                'sensor': top_sensor,
-                'timestamp__gte': start_date,
-                'timestamp__lte': end_date
-            }
-            data = SensorData.objects.filter(**filters).order_by('timestamp')
-        else:
-            global_filters = {
-                'sensor__sensor_type': chart_type,
-                'timestamp__gte': start_date,
-                'timestamp__lte': end_date
-            }
-            data = SensorData.objects.filter(**global_filters).order_by('timestamp')
+        
+        base_filters['timestamp__gte'] = start_date
+        base_filters['timestamp__lte'] = end_date
+        
+        data = SensorData.objects.filter(**base_filters).order_by('timestamp')
 
     # Backend fallbacks when no data collected so far
+    # Only fallback if no specific barangay was requested
     try:
-        if not data:
+        if not data and not barangay_id:
             if limit and limit > 0:
                 # Retry without location filters across all sensors of this type
                 alt = (
@@ -625,54 +739,15 @@ def get_map_data(request):
                 # Track the highest severity level for each barangay
                 current_severity = alert_severity_by_barangay.get(barangay.id, 0)
                 alert_severity_by_barangay[barangay.id] = max(current_severity, alert.severity_level)
-
-        # Load all threshold settings for parameter severity calculation
-        thresholds = {t.parameter: t for t in ThresholdSetting.objects.all()}
-
+        
         # Build barangay data including all barangays
         for barangay in barangay_queryset:
             # Use the highest severity from alerts, or 0 if not affected
             severity = alert_severity_by_barangay.get(barangay.id, 0)
-
-            # Calculate parameter-specific severities
-            param_severities = {}
-            for param, ts in thresholds.items():
-                # Find the latest sensor reading relevant to this barangay
-                # Fallback order: barangay-specific -> municipality-wide -> global
-                latest_reading = SensorData.objects.filter(
-                    sensor__sensor_type=param, sensor__barangay=barangay
-                ).order_by('-timestamp').first()
-
-                if not latest_reading and barangay.municipality_id:
-                    latest_reading = SensorData.objects.filter(
-                        sensor__sensor_type=param, sensor__municipality_id=barangay.municipality_id
-                    ).order_by('-timestamp').first()
-
-                if not latest_reading:
-                    latest_reading = SensorData.objects.filter(
-                        sensor__sensor_type=param
-                    ).order_by('-timestamp').first()
-
-                if latest_reading:
-                    value = latest_reading.value
-                    level = 0
-                    if value >= ts.catastrophic_threshold:
-                        level = 5
-                    elif value >= ts.emergency_threshold:
-                        level = 4
-                    elif value >= ts.warning_threshold:
-                        level = 3
-                    elif value >= ts.watch_threshold:
-                        level = 2
-                    elif value >= ts.advisory_threshold:
-                        level = 1
-                    param_severities[param] = level
-                else:
-                    param_severities[param] = 0
-
+            
             # Include municipality information
             municipality_name = barangay.municipality.name if barangay.municipality else "-"
-
+            
             barangay_data.append({
                 'id': barangay.id,
                 'name': barangay.name,
@@ -682,7 +757,6 @@ def get_map_data(request):
                 'lat': barangay.latitude,
                 'lng': barangay.longitude,
                 'severity': severity,
-                'param_severities': param_severities,
                 # Add extra data
                 'contact_person': barangay.contact_person,
                 'contact_number': barangay.contact_number
@@ -1253,6 +1327,42 @@ def resilience_scores_page(request):
     
     return render(request, 'resilience_scores.html', context)
 
+def get_emergency_contacts(request):
+    """API endpoint to get emergency contacts (no login required)"""
+    # Optional filters
+    barangay_id = request.GET.get('barangay_id')
+    municipality_id = request.GET.get('municipality_id')
+
+    # Base queryset
+    contacts_qs = EmergencyContact.objects.select_related('barangay__municipality').all()
+
+    # Apply filters
+    if barangay_id:
+        contacts_qs = contacts_qs.filter(barangay_id=barangay_id)
+    elif municipality_id:
+        contacts_qs = contacts_qs.filter(barangay__municipality_id=municipality_id)
+
+    # Format contacts for JSON response
+    contacts_data = []
+    for contact in contacts_qs:
+        contacts_data.append({
+            'id': contact.id,
+            'name': contact.name,
+            'role': contact.role,
+            'phone': contact.phone,
+            'email': contact.email,
+            'barangay_id': contact.barangay_id,
+            'barangay_name': contact.barangay.name if contact.barangay else 'All',
+            'municipality_name': contact.barangay.municipality.name if contact.barangay and contact.barangay.municipality else None,
+        })
+
+    # Return as JSON
+    return JsonResponse({
+        'count': len(contacts_data),
+        'results': contacts_data
+    })
+
+
 def get_flood_history(request):
     """API endpoint to get historical flood alerts for a given location."""
     municipality_id = request.GET.get('municipality_id')
@@ -1303,3 +1413,63 @@ def get_flood_history(request):
             'total_pages': paginator.num_pages,
         }
     })
+
+def get_all_barangays(request):
+    """API endpoint to get all barangays.
+
+    Supports optional ?municipality_id=<id> to filter results. Returns a JSON
+    object with a 'barangays' array where each item contains id, name,
+    population, municipality info, lat/lng, contact info and a computed
+    'severity' value derived from any active FloodAlert objects affecting the
+    barangay (highest severity wins).
+    """
+    municipality_id = request.GET.get('municipality_id')
+
+    barangays_qs = Barangay.objects.all()
+    if municipality_id:
+        try:
+            barangays_qs = barangays_qs.filter(municipality_id=int(municipality_id))
+        except Exception:
+            # ignore invalid filter and return all
+            pass
+
+    # Optional limit parameter to return only the first N barangays (ordered by name)
+    limit_param = request.GET.get('limit')
+    try:
+        limit = int(limit_param) if limit_param is not None else None
+        if limit is not None and limit <= 0:
+            limit = None
+    except Exception:
+        limit = None
+
+    # Compute severity for each barangay based on active FloodAlert objects
+    active_alerts = FloodAlert.objects.filter(active=True)
+    if municipality_id:
+        active_alerts = active_alerts.filter(affected_barangays__municipality_id=municipality_id).distinct()
+
+    alert_severity_by_barangay = {}
+    for alert in active_alerts:
+        for b in alert.affected_barangays.all():
+            current = alert_severity_by_barangay.get(b.id, 0)
+            alert_severity_by_barangay[b.id] = max(current, alert.severity_level or 0)
+
+    barangay_data = []
+    qs = barangays_qs.order_by('name')
+    if limit is not None:
+        qs = qs[:limit]
+
+    for barangay in qs:
+        barangay_data.append({
+            'id': barangay.id,
+            'name': barangay.name,
+            'population': barangay.population,
+            'municipality_id': barangay.municipality_id,
+            'municipality_name': barangay.municipality.name if barangay.municipality else "-",
+            'lat': barangay.latitude,
+            'lng': barangay.longitude,
+            'severity': alert_severity_by_barangay.get(barangay.id, 0),
+            'contact_person': barangay.contact_person,
+            'contact_number': barangay.contact_number
+        })
+
+    return JsonResponse({'barangays': barangay_data})

@@ -17,6 +17,7 @@
     _rawSeries: null, // keep last fetched raw series to re-apply normalization without refetch
     _trendsFetchInFlight: false, // guard against overlapping fetches
     _alertsReqToken: 0, // monotonic token to ensure latest alert response wins
+  _lastMapBarangays: [], // cache of last /api/map-data/ barangays for fallback rendering
     trendsRange: 'latest',
     lastAlertId: null, // Track the last seen alert to play sound only for new ones
     lastCombinedLevel: 0, // Track the last severity level to trigger popups only on change
@@ -38,7 +39,8 @@
     initMap();
     bindApplyThresholdsButton();
     setupMapParamSelector(); // New: Bind the map parameter selector
-    setupTrendsRangeControls();
+  setupTrendsRangeControls();
+  // Do not call updateAllBarangayTable() here; refreshAll() will invoke it when appropriate
     // Ensure any previous chart overlay from older versions is removed
     try { clearChartOverlay(); } catch (e) {}
 
@@ -213,107 +215,6 @@
     updateHeatLayer();
   }
 
-  // ---------------- Fetch all barangays in selected municipality ----------------
-  async function fetchAllBarangaysInMunicipality() {
-    try {
-      let url = '/api/map-data/';
-      const params = [];
-      if (state.municipalityId) params.push(`municipality_id=${state.municipalityId}`);
-      if (state.barangayId) params.push(`barangay_id=${state.barangayId}`);
-      if (params.length) url += '?' + params.join('&');
-
-      const res = await fetch(url, { headers: { 'Accept': 'application/json' }});
-      if (!res.ok) return [];
-
-      const data = await res.json();
-      const barangays = data.barangays || [];
-
-      // Adjust severity based on selected map parameter
-      return barangays.map(b => {
-        let severity = b.severity || 0;
-        if (state.mapDisplayParam !== 'overall' && b.param_severities && b.param_severities[state.mapDisplayParam] !== undefined) {
-          severity = b.param_severities[state.mapDisplayParam];
-        }
-        return { ...b, severity };
-      });
-    } catch (e) {
-      return [];
-    }
-  }
-
-  // ---------------- Affected Areas updater ----------------
-  function updateAffectedAreas(affectedBarangays, severityLevel = 0) {
-    const tbody = document.getElementById('affected-areas-body');
-    if (!tbody) return;
-
-    if (!affectedBarangays || affectedBarangays.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="3" style="color: var(--gray)">No barangays currently affected by floods.</td></tr>';
-      return;
-    }
-
-    // If affectedBarangays is an array of IDs (legacy), convert to objects with severity
-    let barangaysData = affectedBarangays;
-    if (typeof affectedBarangays[0] === 'number' || typeof affectedBarangays[0] === 'string') {
-      // Array of IDs, fetch details
-      const promises = affectedBarangays.map(id =>
-        fetch(`/api/barangays/${id}/`, { headers: { 'Accept': 'application/json' }})
-          .then(r => r.ok ? r.json() : Promise.reject(new Error(`Failed to fetch barangay ${id}`)))
-      );
-
-      Promise.allSettled(promises)
-        .then(results => {
-          const barangays = results
-            .filter(r => r.status === 'fulfilled' && r.value)
-            .map(r => ({ ...r.value, severity: severityLevel }));
-
-          renderAffectedAreasTable(barangays);
-        })
-        .catch(() => {
-          tbody.innerHTML = '<tr><td colspan="3">Unable to load affected areas at this time.</td></tr>';
-        });
-    } else {
-      // Array of barangay objects with severity
-      renderAffectedAreasTable(barangaysData);
-    }
-  }
-
-  function renderAffectedAreasTable(barangays) {
-    const tbody = document.getElementById('affected-areas-body');
-    if (!tbody) return;
-
-    // Update the header to reflect the selected parameter
-    const headerEl = document.querySelector('.modern-card .card-title-modern');
-    if (headerEl && headerEl.textContent.startsWith('Affected Areas')) {
-      const paramLabel = state.mapDisplayParam === 'overall' ? 'Overall Risk' :
-                        state.mapDisplayParam === 'rainfall' ? 'Rainfall' :
-                        state.mapDisplayParam === 'water_level' ? 'Water Level' :
-                        state.mapDisplayParam === 'temperature' ? 'Temperature' :
-                        state.mapDisplayParam === 'humidity' ? 'Humidity' :
-                        state.mapDisplayParam === 'wind_speed' ? 'Wind Speed' : 'Overall Risk';
-      headerEl.textContent = `Affected Areas (${paramLabel})`;
-    }
-
-    if (barangays.length > 0) {
-      tbody.innerHTML = barangays.map(b => {
-        const severityLevel = b.severity || 0;
-        const riskLevel = getSeverityText(severityLevel);
-        const riskClass =
-            severityLevel >= 4 ? 'status-danger' :
-            severityLevel >= 3 ? 'status-warning' :
-            severityLevel >= 1 ? 'status-info' :
-            'status-normal';
-
-        return `<tr>
-          <td>${escapeHtml(b.name || '—')}</td>
-          <td>${Number(b.population || 0).toLocaleString()}</td>
-          <td><span class="status-badge ${riskClass}">${riskLevel}</span></td>
-        </tr>`;
-      }).join('');
-    } else {
-      tbody.innerHTML = '<tr><td colspan="3" style="color: var(--gray)">No barangays currently affected by floods.</td></tr>';
-    }
-  }
-
   // ---------------- Current Location card updater ----------------
   function updateCurrentLocationCard() {
     try {
@@ -351,6 +252,8 @@
     updateAlerts();
     updateMapData();
     loadTrendsChart();
+  // Affected Areas table removed — no-op
+
   }
 
   // Bind Latest / 1W / 1M / 1Y controls and update state.trendsRange
@@ -433,9 +336,8 @@
         const txt = await res.text().catch(() => '');
         throw new Error(`Failed to apply thresholds (${res.status}): ${txt || res.statusText}`);
       }
-      // On success, refresh alerts UI and map data
+      // On success, refresh alerts UI
       updateAlerts();
-      updateMapData();
     } catch (e) {
       // Quietly log for automatic path
       console.warn('[Apply Thresholds] Auto-apply failed:', e.message || e);
@@ -473,7 +375,7 @@
     const brgySel = document.getElementById('barangay-select');
     if (!muniSel) return;
 
-    // Populate municipalities
+  // Populate municipalities
     fetch('/api/municipalities/?limit=200')
       .then(r => r.ok ? r.json() : Promise.reject(r))
       .then(data => {
@@ -489,27 +391,24 @@
         // Restore persisted selection
         const savedMuni = sessionStorage.getItem('dashboard_municipality_id');
         const savedBrgy = sessionStorage.getItem('dashboard_barangay_id');
-        if (savedMuni) {
-          muniSel.value = savedMuni;
-          state.municipalityId = savedMuni;
-          populateBarangays(savedMuni).then(() => {
-            if (savedBrgy && brgySel) {
-              brgySel.value = savedBrgy;
-              state.barangayId = savedBrgy;
-              brgySel.disabled = false;
-              updateCurrentLocationCard();
-              refreshAll();
-              applyThresholdsNow();
-            } else {
-              updateCurrentLocationCard();
-              refreshAll();
-              applyThresholdsNow();
-            }
-          });
-        } else {
-          // No saved selection; still reflect defaults in the card
+        // Always populate barangays (show all barangays independent of municipality)
+        populateBarangays().then(() => {
+          if (savedMuni) {
+            muniSel.value = savedMuni;
+            state.municipalityId = savedMuni;
+          }
+          if (savedBrgy && brgySel) {
+            brgySel.value = savedBrgy;
+            state.barangayId = savedBrgy;
+          }
+          // Ensure barangay select is enabled so users can always pick any barangay
+          if (brgySel) brgySel.disabled = false;
           updateCurrentLocationCard();
-        }
+          refreshAll();
+          applyThresholdsNow();
+        }).catch(() => {
+          updateCurrentLocationCard();
+        });
       })
       .catch(() => {});
 
@@ -545,7 +444,8 @@
               state.map.setView([municipality.latitude, municipality.longitude], 12);
             }
             // Now that the map is centered, refresh other data.
-            populateBarangays(state.municipalityId).then(() => {
+            // Populate barangays but keep them unfiltered so All Barangays are visible
+            populateBarangays().then(() => {
               // After populating barangays, refresh all dashboard components.
               refreshAll();
             });
@@ -559,12 +459,14 @@
         applyThresholdsNow();
       } else {
         if (state.heatEnabled) updateHeatLayer();
-        refreshAll();
+  refreshAll();
       }
     });
 
     // On barangay change, just set barangayId and refresh
     if (brgySel) {
+      // Ensure barangay selection is always enabled so users can pick any barangay
+      brgySel.disabled = false;
       brgySel.addEventListener('change', () => {
         state.barangayId = brgySel.value || null;
         sessionStorage.setItem('dashboard_barangay_id', state.barangayId || '');
@@ -590,10 +492,12 @@
   }
 
   function populateBarangays(municipalityId) {
+    // If municipalityId is provided, we still ignore it and fetch all barangays.
     const brgySel = document.getElementById('barangay-select');
-    if (!brgySel || !municipalityId) return Promise.resolve();
+    if (!brgySel) return Promise.resolve();
     brgySel.disabled = true;
-    return fetch(`/api/all-barangays/?municipality_id=${encodeURIComponent(municipalityId)}`)
+    // Fetch all barangays unfiltered so the dropdown always shows every barangay.
+    return fetch(`/api/all-barangays/`)
       .then(r => r.ok ? r.json() : Promise.reject(r))
       .then(d => {
         const items = d.barangays || [];
@@ -684,7 +588,7 @@
         const refText = ref !== '' ? Number(ref).toFixed(2).replace(/\.00$/,'') : '';
         const statusText = badge(lvl);
         const color = (lvl>=4)?'#dc2626':(lvl>=3)?'#d97706':(lvl>=1)?'#0ea5e9':'#16a34a';
-        const extra = (lvl>0 && refText!=='') ? ` (>= ${refText} ${unit})` : '';
+  const extra = (lvl>0 && refText!=='') ? ` (> ${refText} ${unit})` : '';
         return `<div style="display:flex; justify-content:space-between; gap:10px; padding:4px 0;">
           <span>${paramLabel(it.parameter)}</span>
           <span style="white-space:nowrap; color:${color}; font-weight:600;">${statusText}</span>
@@ -831,7 +735,7 @@
 
   // New: Setup map parameter selector dropdown
   function setupMapParamSelector() {
-    const selector = document.getElementById('map-param-select');
+    const selector = document.getElementById('map-param-selector');
     if (!selector) return;
 
     // Populate options
@@ -853,12 +757,6 @@
       state.mapDisplayParam = e.target.value;
       // Refresh map data to update colors
       updateMapData();
-      // Also update affected areas to reflect the new parameter selection
-      fetchAllBarangaysInMunicipality().then(barangays => {
-        updateAffectedAreas(barangays, 0);
-      }).catch(() => {
-        updateAffectedAreas([], 0);
-      });
     });
   }
   function openAlertModal(alert) {
@@ -971,6 +869,9 @@
             }
           }
           msg.innerHTML = lines.join('<br>');
+          // Aggregate affected barangays from all returned alerts (union) so the Affected Areas
+          // card shows every barangay referenced by any active alert, not only the highest-priority alert.
+              // Affected Areas UI removed; nothing to do here
         } else if (thresholdLevel > 0 && sev) {
           // Threshold-driven status only
           const text = severityName(thresholdLevel);
@@ -981,10 +882,26 @@
           const topItems = (sev.items || []).filter(it => (it.level||0)>0).sort((a,b)=> (b.level||0)-(a.level||0)).slice(0,3);
           if (topItems.length) lines.push(buildThresholdDetails(topItems));
           msg.innerHTML = lines.join('<br>');
+          // If no FloodAlert objects exist but thresholds indicate breaches, try to infer affected barangays from map-data
+          (async () => {
+            try {
+              const params = [];
+              if (state.municipalityId) params.push(`municipality_id=${state.municipalityId}`);
+              if (state.barangayId) params.push(`barangay_id=${state.barangayId}`);
+              const url = `/api/map-data/${params.length ? ('?' + params.join('&')) : ''}`;
+              const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+              if (!res.ok) { return; }
+              const md = await res.json();
+              // Affected Areas UI removed; no further action required with ids
+              } catch (e) {
+              // ignore
+            }
+          })();
         } else {
           // No alerts and no threshold breach -> Normal
           title.textContent = 'No Active Alerts';
           msg.textContent = 'The system is monitoring environmental conditions continuously.';
+          // Affected Areas UI removed
         }
 
         // Render parameter status list using compact endpoint
@@ -1017,13 +934,6 @@
       .catch(() => {
         // Leave as-is on error
       });
-
-   // Always fetch and display all barangays in the selected municipality
-   fetchAllBarangaysInMunicipality().then(barangays => {
-     updateAffectedAreas(barangays, 0);
-   }).catch(() => {
-     updateAffectedAreas([], 0);
-   });
   }
 
   // Build a compact HTML list of top breached thresholds
@@ -1064,7 +974,7 @@
       if (state.municipalityId) params.push(`municipality_id=${state.municipalityId}`);
       if (state.barangayId) params.push(`barangay_id=${state.barangayId}`);
       const url = `/api/threshold-visualization/?${params.join('&')}`;
-      const res = await fetch(url, { headers: { 'Accept': 'application/json' }});
+        const res = await fetch(url, { headers: { 'Accept': 'application/json' }});
       if (!res.ok) return null;
       const data = await res.json();
       const items = (data.data || []).map(it => ({
@@ -1079,6 +989,7 @@
     } catch (e) { return null; }
   }
 
+  // Affected Areas UI removed — no JS left for rendering the card
 
   // New helper function to get color based on severity
   function getThresholdColor(level) {
@@ -1186,7 +1097,11 @@
         drawZones(data.zones || []);
         drawSensors(data.sensors || []);
         drawBarangays(data.barangays || []);
-        renderLocationsList(data.barangays || []);
+  renderLocationsList(data.barangays || []);
+  // Cache the last barangays payload for fallback rendering when alerts are absent
+  try { state._lastMapBarangays = Array.isArray(data.barangays) ? data.barangays : []; } catch (e) { state._lastMapBarangays = []; }
+  // Also render the Affected Areas card with full barangay list (useful to show all barangays)
+  // Affected Areas UI removed
         if (lastUpdated) lastUpdated.textContent = new Date().toLocaleString();
         // Ensure map tiles realign after layer updates
         try {
@@ -1199,6 +1114,20 @@
       .catch(() => {
         if (lastUpdated) lastUpdated.textContent = 'Unable to load map data';
       });
+  }
+
+  // Hide the Affected Areas card/table — this project no longer uses that UI
+  function hideAffectedAreasCard() {
+    try {
+      const tbody = document.getElementById('affected-areas-body');
+      if (tbody) {
+        // Clear contents and hide the entire containing card if present
+        tbody.innerHTML = '';
+        const card = tbody.closest ? tbody.closest('.card') : null;
+        if (card) card.style.display = 'none';
+        else tbody.style.display = 'none';
+      }
+    } catch (e) { /* ignore */ }
   }
 
   function clearMapLayers() {
@@ -1253,12 +1182,7 @@
       // threshold analysis of sensor readings (with active alerts taking priority).
       let severityLevel = 0; // Default to 0 (Normal)
       if (state.mapDisplayParam === 'overall') {
-        if (b.param_severities) {
-          // For overall risk, use the maximum severity across all parameters
-          severityLevel = Math.max(...Object.values(b.param_severities));
-        } else {
-          severityLevel = b.severity || 0;
-        }
+        severityLevel = b.severity || 0;
       } else if (b.param_severities && b.param_severities[state.mapDisplayParam] !== undefined) {
         // Use the specific parameter's severity if it exists
         severityLevel = b.param_severities[state.mapDisplayParam];
@@ -1308,7 +1232,7 @@
       state.map.setView(ll, 17);
       layer.openPopup();
       // Brief highlight pulse
-      const pulse = L.circleMarker(ll, { radius: 18, color: '#0d6efd', fillColor: '#0d6efd', fillOpacity: 0.3, weight: 2 });
+        fetch(url, { headers: { 'Accept': 'application/json' }})
       pulse.addTo(state.mapLayers.barangays);
       setTimeout(() => { state.mapLayers.barangays.removeLayer(pulse); }, 1500);
     } else if (state.barangayId && coords.length === 1) {
@@ -1813,5 +1737,10 @@
   function paramLabel(key) {
     const map = { rainfall: 'Rainfall', water_level: 'Water Level', temperature: 'Temperature', humidity: 'Humidity', wind_speed: 'Wind Speed' };
     return map[key] || (key ? (key.charAt(0).toUpperCase() + key.slice(1)) : 'Parameter');
+  }
+
+  function updateAllBarangayTable() {
+    // No-op: Affected Areas UI removed. Ensure it's hidden if present.
+          // Affected Areas UI removed
   }
 })();

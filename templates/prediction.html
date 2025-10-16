@@ -273,6 +273,12 @@
                                 {{ form.predicted_flood_time }}
                             </div>
                         </div>
+
+                        <div class="mb-3">
+                            <label for="{{ form.scheduled_send_time.id_for_label }}" class="form-label">Schedule Alert Send Time (Optional)</label>
+                            {{ form.scheduled_send_time }}
+                            <div class="form-text">Leave blank to send immediately. Set a future time to schedule the alert.</div>
+                        </div>
                         
                         <div class="mb-3">
                             <label for="{{ form.affected_barangays.id_for_label }}" class="form-label">Affected Barangays</label>

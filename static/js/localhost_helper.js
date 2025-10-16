@@ -195,16 +195,13 @@ function updateGaugeDirectly(gaugeId, value, unit) {
  */
 function retryMapDataIfNeeded() {
     setTimeout(() => {
-        // Check if map error message is visible
-        const mapErrorElements = document.querySelectorAll('.leaflet-popup-content');
+        // Check if map error overlay or footer message is visible
         let hasMapError = false;
-        
-        mapErrorElements.forEach(element => {
-            if (element.textContent.includes('Map Data Error') || 
-                element.textContent.includes('Unable to load')) {
-                hasMapError = true;
-            }
-        });
+        // Check our new overlay id (modern_dashboard) or the footer last-updated text
+        const overlay = document.getElementById('map-error-overlay');
+        if (overlay) hasMapError = true;
+        const lastUpdated = document.getElementById('map-last-updated');
+        if (lastUpdated && String(lastUpdated.textContent || '').toLowerCase().includes('unable to load')) hasMapError = true;
         
         if (hasMapError || !window.hasMapData) {
             console.log('Map data error detected, attempting to reload map data...');
@@ -221,24 +218,52 @@ function retryMapDataIfNeeded() {
                 mapDataUrl += `?municipality_id=${municipalityId}`;
             }
             
-            // Fetch map data
+            // Fetch map data and trigger the page's map refresh functions
             fetch(mapDataUrl, {
                 headers: {
                     'X-Requested-With': 'XMLHttpRequest',
                     'Accept': 'application/json'
                 }
             })
-            .then(response => response.json())
+            .then(response => {
+                if (!response.ok) throw new Error('HTTP ' + response.status);
+                return response.json();
+            })
             .then(data => {
-                console.log('Successfully fetched map data:', data);
-                
-                // If we have a loadMapData function, call it
-                if (window.loadMapData) {
-                    window.loadMapData(data);
-                } else if (window.initializeMap) {
-                    window.initializeMap(data);
+                // Log a compact preview of the fetched JSON to avoid console printing empty objects
+                try {
+                    const preview = JSON.stringify(data, null, 2).slice(0, 1200);
+                    console.log('Successfully fetched map data (preview):', preview);
+                } catch (e) {
+                    console.log('Successfully fetched map data (raw):', data);
                 }
-                
+
+                // If the modern dashboard exposes updateMapData that accepts external data, pass it directly
+                try {
+                    if (typeof window.updateMapData === 'function') {
+                        // If updateMapData returns a promise, wait for it; otherwise just call it
+                        const res = window.updateMapData(data);
+                        if (res && typeof res.then === 'function') {
+                            res.then(() => { try { const ex = document.getElementById('map-error-overlay'); if (ex && ex.parentNode) ex.parentNode.removeChild(ex); } catch(e){} });
+                        } else {
+                            try { const ex = document.getElementById('map-error-overlay'); if (ex && ex.parentNode) ex.parentNode.removeChild(ex); } catch(e){}
+                        }
+                        window.hasMapData = true;
+                        return;
+                    }
+                } catch (e) { console.warn('updateMapData call failed:', e); }
+
+                // Fallback: call legacy loadMapData() which will perform its own fetch
+                try {
+                    if (typeof window.loadMapData === 'function') {
+                        window.loadMapData();
+                        window.hasMapData = true;
+                        try { const ex = document.getElementById('map-error-overlay'); if (ex && ex.parentNode) ex.parentNode.removeChild(ex); } catch(e){}
+                        return;
+                    }
+                } catch (e) { console.warn('loadMapData call failed:', e); }
+
+                // If no known reload function exists, just mark we have data
                 window.hasMapData = true;
             })
             .catch(error => {

@@ -119,6 +119,8 @@ class Barangay(models.Model):
     contact_person = models.CharField(max_length=100, blank=True, null=True)
     contact_number = models.CharField(max_length=20, blank=True, null=True)
     is_featured = models.BooleanField(default=False, help_text="Mark as featured to be included in periodic weather updates.")
+    auto_alert_enabled = models.BooleanField(default=True, help_text="Enable automatic alerts for this barangay")
+    last_auto_alert_sent = models.DateTimeField(blank=True, null=True, help_text="Last time an automatic alert was sent for this barangay")
 
     def __str__(self):
         return self.name
@@ -180,9 +182,20 @@ class FloodAlert(models.Model):
     affected_barangays = models.ManyToManyField(Barangay, related_name='flood_alerts')
     issued_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True)
     last_notification_sent_at = models.DateTimeField(blank=True, null=True)
+    scheduled_send_time = models.DateTimeField(blank=True, null=True, help_text="Time when notifications should be sent. If not set, notifications are sent immediately.")
+    actions = models.JSONField(default=list, blank=True, help_text="List of recommended actions for this alert")
     
     def __str__(self):
         return f"{self.get_severity_level_display()}: {self.title}"
+    
+    @property
+    def actions_list(self):
+        """Return actions as a list, ensuring backward compatibility."""
+        if not self.actions:
+            return []
+        if isinstance(self.actions, list):
+            return self.actions
+        return [action.strip() for action in self.actions.split('\n') if action.strip()]
     
     class Meta:
         ordering = ['-issued_at']

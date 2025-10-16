@@ -135,7 +135,6 @@
     .map-loc-item:hover { background: #eef2ff; }
     .map-loc-item.active { background: #e0e7ff; }
     .map-loc-name { font-weight: 500; color: #1f2937; }
-    .map-loc-pop { color: var(--gray); font-size: 12px; }
     .map-legend { margin-top: 10px; }
     .map-container { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: #f8fafc; }
     /* Hide built-in attribution; we show it in the footer instead */
@@ -314,14 +313,7 @@
         <div class="modern-card" style="grid-column: span 2;">
             <div class="card-header-modern">
                 <div class="card-title-modern">Flood Risk Map</div>
-                <select id="map-param-select" class="form-select form-select-sm" style="width: auto;">
-                    <option value="overall" selected>Overall Risk</option>
-                    <option value="rainfall">Rainfall</option>
-                    <option value="water_level">Water Level</option>
-                    <option value="temperature">Temperature</option>
-                    <option value="humidity">Humidity</option>
-                    <option value="wind_speed">Wind Speed</option>
-                </select>
+
             </div>
             <div class="map-card-body">
                 <!-- Map first, full width -->
@@ -346,24 +338,38 @@
             </div>
         </div>
 
-        <!-- Affected Areas Card (single column next to wider map) -->
+        <!-- All Barangay Card (single column next to wider map) -->
         <div class="modern-card">
             <div class="card-header-modern">
-                <div class="card-title-modern">Affected Areas</div>
+                <div class="card-title-modern">All Barangay</div>
             </div>
-            <p>No barangays currently affected by floods.</p>
             <table class="data-table">
                 <thead>
                     <tr>
                         <th>Barangay</th>
                         <th>Population</th>
-                        <th>Risk Level</th>
+                        <th>Contact Person</th>
+                        <th>Contact Number</th>
                     </tr>
                 </thead>
                 <tbody id="affected-areas-body">
-                    <tr><td colspan="3" style="color: var(--gray)">No barangays currently affected by floods.</td></tr>
+                    {% if barangays %}
+                        {% for barangay in barangays %}
+                            <tr>
+                                <td>{{ barangay.name }}</td>
+                                <td>{{ barangay.population }}</td>
+                                <td>{{ barangay.contact_person|default:'—' }}</td>
+                                <td>{{ barangay.contact_number|default:'—' }}</td>
+                            </tr>
+                        {% endfor %}
+                    {% else %}
+                        <tr><td colspan="4" style="color: var(--gray)">No barangays found.</td></tr>
+                    {% endif %}
                 </tbody>
             </table>
+            {% if barangays_limited %}
+                <div style="margin-top:8px; font-size:13px; color:var(--gray);">Showing 10 barangays of {{ barangays_total }} total. To view all, go to the Barangays page.</div>
+            {% endif %}
         </div>
 
         <!-- Environmental Data Trends Card (full-width row) -->

@@ -101,7 +101,7 @@ class FloodAlertForm(forms.ModelForm):
     """Form for creating and editing flood alerts"""
     class Meta:
         model = FloodAlert
-        fields = ['title', 'description', 'severity_level', 'active', 'predicted_flood_time', 'affected_barangays']
+        fields = ['title', 'description', 'severity_level', 'active', 'predicted_flood_time', 'affected_barangays', 'scheduled_send_time']
         widgets = {
             'title': forms.TextInput(attrs={'class': 'form-control'}),
             'description': forms.Textarea(attrs={'class': 'form-control', 'rows': 4}),
@@ -109,6 +109,7 @@ class FloodAlertForm(forms.ModelForm):
             'active': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
             'predicted_flood_time': forms.DateTimeInput(attrs={'class': 'form-control', 'type': 'datetime-local'}),
             'affected_barangays': forms.SelectMultiple(attrs={'class': 'form-select', 'size': 5}),
+            'scheduled_send_time': forms.DateTimeInput(attrs={'class': 'form-control', 'type': 'datetime-local'}),
         }
 
 class ThresholdSettingForm(forms.ModelForm):

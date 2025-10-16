@@ -79,6 +79,14 @@ def dispatch_notifications_for_alert(alert: FloodAlert):
         logger.info(f"Alert {alert.id} is not active. Skipping notification dispatch.")
         return
 
+    # Check if notifications should be sent immediately or scheduled
+    from django.utils import timezone
+    current_time = timezone.now()
+
+    if alert.scheduled_send_time and alert.scheduled_send_time > current_time:
+        logger.info(f"Alert {alert.id} is scheduled to be sent at {alert.scheduled_send_time}. Current time: {current_time}. Skipping for now.")
+        return
+
     # Get all barangays affected by the alert
     affected_barangays = alert.affected_barangays.all()
     if not affected_barangays.exists():

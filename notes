@@ -1,0 +1,5 @@
+Implemented a cooldown mechanism to prevent alert spam. Added last_notification_sent_at field to FloodAlert model and modified the apply_thresholds_all command to only send notifications for existing alerts if:
+
+Severity level increases (immediate notification)
+At least 1 hour has passed since the last notification (periodic update)
+New alerts are always sent immediately. This ensures critical updates are communicated promptly while limiting notifications to a maximum of once per hour per alert, reducing spam for users in affected barangays.

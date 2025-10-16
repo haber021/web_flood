@@ -1,11 +1,14 @@
 from django.contrib import admin
-from django.contrib.auth.models import User, Group
-from django.contrib.auth.admin import UserAdmin
+from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
+from django.contrib.auth.forms import UserChangeForm, UserCreationForm
+from django.contrib.auth.models import User
+from django.utils.translation import gettext_lazy as _
 from django import forms
+
 from .models import (
-    Sensor, SensorData, Municipality, Barangay, FloodRiskZone, 
-    FloodAlert, ThresholdSetting, NotificationLog, EmergencyContact, UserProfile,
-    ResilienceScore
+    Sensor, SensorData, Municipality, Barangay, FloodRiskZone,
+    FloodAlert, ThresholdSetting, NotificationLog, EmergencyContact,
+    ResilienceScore, UserProfile
 )
 
 class SensorAdminForm(forms.ModelForm):
@@ -147,6 +150,34 @@ class FloodAlertAdmin(admin.ModelAdmin):
     list_filter = ('severity_level', 'active', 'issued_at')
     search_fields = ('title', 'description')
     filter_horizontal = ('affected_barangays',)
+    
+    fieldsets = (
+        ('Alert Information', {
+            'fields': ('title', 'description', 'severity_level', 'active')
+        }),
+        ('Timing', {
+            'fields': ('predicted_flood_time', 'scheduled_send_time')
+        }),
+        ('Affected Areas', {
+            'fields': ('affected_barangays',)
+        }),
+        ('Recommended Actions', {
+            'fields': ('actions',),
+            'description': 'Enter one recommended action per line.'
+        }),
+    )
+    
+    def get_form(self, request, obj=None, **kwargs):
+        form = super().get_form(request, obj, **kwargs)
+        # Make the actions field use a textarea for better editing
+        form.base_fields['actions'].widget = forms.Textarea(attrs={'rows': 5, 'cols': 80})
+        return form
+    
+    def save_model(self, request, obj, form, change):
+        # Convert newline-separated actions to a list
+        if 'actions' in form.cleaned_data and isinstance(form.cleaned_data['actions'], str):
+            obj.actions = [action.strip() for action in form.cleaned_data['actions'].split('\n') if action.strip()]
+        super().save_model(request, obj, form, change)
     date_hierarchy = 'issued_at'
 
 @admin.register(ThresholdSetting)
@@ -175,7 +206,7 @@ class UserProfileInline(admin.StackedInline):
     fk_name = 'user'
 
 # Define a new User admin
-class CustomUserAdmin(UserAdmin):
+class CustomUserAdmin(BaseUserAdmin):
     inlines = (UserProfileInline, )
     list_display = ('username', 'email', 'first_name', 'last_name', 'is_staff', 'get_role')
     list_select_related = ('profile', )

@@ -22,18 +22,56 @@ from flood_monitoring.ml.flood_prediction_model import DEFAULT_CLASSIFICATION_AL
 logger = logging.getLogger(__name__)
 
 from core.models import (
-    Sensor, SensorData, Municipality, Barangay, FloodRiskZone, 
+    Sensor, SensorData, Municipality, Barangay, FloodRiskZone,
     FloodAlert, ThresholdSetting, NotificationLog, EmergencyContact,
     ResilienceScore,
     UserProfile
 )
 from .serializers import (
     SensorSerializer, SensorDataSerializer, MunicipalitySerializer, BarangaySerializer,
-    FloodRiskZoneSerializer, FloodAlertSerializer, ThresholdSettingSerializer, 
+    FloodRiskZoneSerializer, FloodAlertSerializer, ThresholdSettingSerializer,
     NotificationLogSerializer, EmergencyContactSerializer, ResilienceScoreSerializer
 )
 
 from core.notifications import dispatch_notifications_for_alert
+
+
+@api_view(['GET'])
+@permission_classes([permissions.AllowAny])
+def get_emergency_contacts(request):
+    """API endpoint to get emergency contacts (no login required)"""
+    # Optional filters
+    barangay_id = request.GET.get('barangay_id')
+    municipality_id = request.GET.get('municipality_id')
+
+    # Base queryset
+    contacts_qs = EmergencyContact.objects.select_related('barangay__municipality').all()
+
+    # Apply filters
+    if barangay_id:
+        contacts_qs = contacts_qs.filter(barangay_id=barangay_id)
+    elif municipality_id:
+        contacts_qs = contacts_qs.filter(barangay__municipality_id=municipality_id)
+
+    # Format contacts for JSON response
+    contacts_data = []
+    for contact in contacts_qs:
+        contacts_data.append({
+            'id': contact.id,
+            'name': contact.name,
+            'role': contact.role,
+            'phone': contact.phone,
+            'email': contact.email,
+            'barangay_id': contact.barangay_id,
+            'barangay_name': contact.barangay.name if contact.barangay else 'All',
+            'municipality_name': contact.barangay.municipality.name if contact.barangay and contact.barangay.municipality else None,
+        })
+
+    # Return as JSON
+    return Response({
+        'count': len(contacts_data),
+        'results': contacts_data
+    })
 class SensorViewSet(viewsets.ReadOnlyModelViewSet):
     """API endpoint for sensors"""
     queryset = Sensor.objects.all()
@@ -235,7 +273,7 @@ def chart_data(request):
     # Build base filters
     filters = {'sensor__sensor_type': param}
     if municipality_id:
-        filters['sensor__municipality_id'] = municipality_id
+        filters['sensor__municipality_id'] = municipality_id # This will be used in fallback
     if barangay_id:
         filters['sensor__barangay_id'] = barangay_id
 
@@ -257,14 +295,19 @@ def chart_data(request):
         # No range provided; slice to latest `limit` then re-order ascending
         # Note: Using values_list for efficiency once we have ids
         latest_ids = list(SensorData.objects.filter(**filters).order_by('-timestamp').values_list('id', flat=True)[:limit])
+
+
         qs = SensorData.objects.filter(id__in=latest_ids).order_by('timestamp')
 
-    
+    # Fallback logic for range-based queries
+    if 'timestamp__gte' in filters:
+        qs = SensorData.objects.filter(**filters).order_by('timestamp')
+
 
     # Serialize into simple arrays
     labels, labels_manila, values = [], [], []
     manila_tz = ZoneInfo('Asia/Manila') if ZoneInfo else None
-    for sd in qs:
+    for sd in qs.iterator(): # Use iterator for memory efficiency on large querysets
         ts = sd.timestamp
         labels.append(ts.isoformat())
         try:
@@ -1707,7 +1750,7 @@ def apply_thresholds(request):
             # Compose title/description
             title_prefix = f"Automated Alert for {b.name}"
             details_lines = [
-                f"- {d['parameter'].replace('_',' ').title()}: {d['value']} {d['unit']} (>= {d['severity_name']})"
+                f"- {d['parameter'].replace('_',' ').title()}: {d['value']} {d['unit']} (> {d['severity_name']})"
                 for d in sorted(exceeded_details, key=lambda x: (-x['severity'], x['parameter']))
             ]
             description = (

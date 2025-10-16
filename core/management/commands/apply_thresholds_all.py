@@ -123,7 +123,7 @@ class Command(BaseCommand):
             }
             for d in sorted(exceeded_details, key=lambda x: (-x["severity"], x["parameter"])):
                 details_lines.append(
-                    f"- {d['parameter'].replace('_', ' ').title()}: {d['value']} {d['unit']} (>= {sev_name[d['severity']]})"
+                    f"- {d['parameter'].replace('_', ' ').title()}: {d['value']} {d['unit']} (> {sev_name[d['severity']]})"
                 )
             description = (
                 f"Automated threshold evaluation at {now.strftime('%Y-%m-%d %H:%M:%S %Z')} for {b.name}.\n"
@@ -179,8 +179,8 @@ class Command(BaseCommand):
                 elif existing.last_notification_sent_at is None:
                     # Never sent before, dispatch
                     should_dispatch = True
-                elif (now - existing.last_notification_sent_at) >= timedelta(hours=1):
-                    # At least 1 hour since last notification, dispatch update
+                elif (now - existing.last_notification_sent_at) >= timedelta(hours=3):
+                    # At least 3 hours since last notification, dispatch update
                     should_dispatch = True
 
                 if should_dispatch:

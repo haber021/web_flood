@@ -1,6 +1,45 @@
 {% extends "base.html" %}
 
-{% block title %} - Barangays Management{% endblock %}
+{% block extra_css %}
+<style>
+    .toggleable-cards {
+        transition: all 0.3s ease-in-out;
+        opacity: 1;
+    }
+
+    .toggleable-cards.collapsing {
+        transition: all 0.3s ease-in-out;
+    }
+
+    .toggleable-cards.collapse {
+        opacity: 0;
+        display: none;
+    }
+
+    .toggleable-cards.collapse.show {
+        opacity: 1;
+        display: block;
+    }
+
+    #toggle-cards-btn {
+        transition: all 0.2s ease;
+    }
+
+    #toggle-cards-btn:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+
+    .form-select, .form-control {
+        transition: border-color 0.2s ease;
+    }
+
+    .form-select:focus, .form-control:focus {
+        border-color: #0d6efd;
+        box-shadow: 0 0 0 0.2rem rgba(13, 110, 253, 0.25);
+    }
+</style>
+{% endblock %}
 
 {% block content %}
 <div class="container-fluid p-4">
@@ -17,16 +56,23 @@
                         <i class="fas fa-search"></i>
                     </button>
                 </div>
-                
+
                 <div style="width: 150px;">
                     {{ form.severity_level }}
                 </div>
             </form>
         </div>
     </div>
-    
+
+    <div class="row mb-3">
+        <div class="col-12 d-flex justify-content-end">
+            <button id="toggle-cards-btn" class="btn btn-outline-secondary">
+                <i class="fas fa-eye-slash me-1"></i>Hide Location & Alert Cards
+            </button>
+        </div>
+    </div>
     <!-- Municipality Selector -->
-    <div class="card shadow-sm mb-4">
+    <div class="card shadow-sm mb-4 toggleable-cards collapse show" id="municipality-selector">
         <div class="card-header bg-primary text-white">
             <h5 class="mb-0"><i class="fas fa-building me-2"></i>Select Municipality</h5>
         </div>
@@ -54,9 +100,9 @@
             </div>
         </div>
     </div>
-    
+
     <!-- Barangay Cards Container -->
-    <div class="card shadow-sm mb-4">
+    <div class="card shadow-sm mb-4 toggleable-cards collapse show" id="barangay-cards">
         <div class="card-header bg-primary text-white">
             <div class="d-flex justify-content-between align-items-center">
                 <h5 class="mb-0"><i class="fas fa-map-marked-alt me-2"></i>Barangay Cards</h5>
@@ -233,7 +279,9 @@ document.addEventListener('DOMContentLoaded', function() {
     const historyLocationName = document.getElementById('history-location-name');
     const historySearchInput = document.getElementById('history-search-input');
     const historySeverityFilter = document.getElementById('history-severity-filter');
+    const toggleCardsBtn = document.getElementById('toggle-cards-btn');
     let searchDebounceTimer;
+    let cardsVisible = true;
 
     function updateHistoryView() {
         const barangayId = barangaySelect.value;
@@ -270,6 +318,26 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 
     historySeverityFilter.addEventListener('change', updateHistoryView);
+
+    toggleCardsBtn.addEventListener('click', function() {
+        cardsVisible = !cardsVisible;
+        const municipalitySelector = new bootstrap.Collapse(document.getElementById('municipality-selector'), {
+            toggle: false
+        });
+        const barangayCards = new bootstrap.Collapse(document.getElementById('barangay-cards'), {
+            toggle: false
+        });
+
+        if (cardsVisible) {
+            municipalitySelector.show();
+            barangayCards.show();
+            toggleCardsBtn.textContent = 'Hide Location & Alert Cards';
+        } else {
+            municipalitySelector.hide();
+            barangayCards.hide();
+            toggleCardsBtn.textContent = 'Show Location & Alert Cards';
+        }
+    });
 
     // Initial load if a selection is already present
     updateHistoryView();

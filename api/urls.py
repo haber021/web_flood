@@ -27,4 +27,5 @@ urlpatterns = [
     path('threshold-visualization/<str:parameter>/', views.threshold_visualization_parameter, name='threshold_visualization_parameter'),
     path('historical-suggestion/', views.historical_suggestion, name='historical_suggestion'),
     path('all-barangays/', views.get_all_barangays, name='get_all_barangays'),
+    path('emergency-contacts/', views.get_emergency_contacts, name='get_emergency_contacts'),
 ]
