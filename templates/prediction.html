@@ -87,7 +87,8 @@
                     </div>
                     <div class="d-flex justify-content-between align-items-center mt-3">
                         <div class="btn-group btn-group-sm">
-                            <button class="btn btn-outline-secondary active" data-period="7">7 Days</button>
+                            <button class="btn btn-outline-secondary active" data-period="10">Latest 10</button>
+                            <button class="btn btn-outline-secondary" data-period="7">7 Days</button>
                             <button class="btn btn-outline-secondary" data-period="30">30 Days</button>
                             <button class="btn btn-outline-secondary" data-period="365">1 Year</button>
                         </div>
@@ -282,8 +283,13 @@
                         
                         <div class="mb-3">
                             <label for="{{ form.affected_barangays.id_for_label }}" class="form-label">Affected Barangays</label>
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="select-all-barangays">
+                                <label class="form-check-label" for="select-all-barangays">
+                                    Select All
+                                </label>
+                            </div>
                             {{ form.affected_barangays }}
-                            <div class="form-text">Hold Ctrl/Cmd to select multiple barangays</div>
                         </div>
                         
                         <div class="mb-3 form-check">

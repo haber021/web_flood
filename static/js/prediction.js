@@ -5,7 +5,7 @@ document.addEventListener('DOMContentLoaded', function() {
     const state = {
         historicalChart: null,
         historicalDataType: 'rainfall', // 'rainfall' or 'water_level'
-        historicalPeriod: '7', // '7', '30', '365'
+        historicalPeriod: '10', // '7', '30', '365'
         municipalityId: null,
         barangayId: null,
     };
@@ -181,7 +181,7 @@ document.addEventListener('DOMContentLoaded', function() {
             const data = await response.json();
 
             if (data.affected_barangays && data.affected_barangays.length > 0) {
-                tbody.innerHTML = data.affected_barangays.map(b => `
+                tbody.innerHTML = data.affected_barangays.slice(0, 5).map(b => `
                     <tr>
                         <td>${b.name}</td>
                         <td>${b.population.toLocaleString()}</td>
@@ -289,7 +289,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
     function bindHistoricalChartControls() {
         const typeButtons = document.querySelectorAll('#btn-rainfall-history, #btn-water-level-history');
-        const periodButtons = document.querySelectorAll('.btn-group[data-period] button');
+        const periodButtons = document.querySelectorAll('.btn-group button[data-period]');
 
         typeButtons.forEach(btn => {
             btn.addEventListener('click', () => {
@@ -319,7 +319,15 @@ document.addEventListener('DOMContentLoaded', function() {
         const unit = state.historicalDataType === 'rainfall' ? 'mm' : 'm';
         chart.options.scales.y.title.text = `${state.historicalDataType.replace('_', ' ')} (${unit})`;
 
-        let url = `/api/chart-data/?type=${state.historicalDataType}&days=${state.historicalPeriod}`;
+        let url = `/api/chart-data/?type=${state.historicalDataType}`;
+        const period = state.historicalPeriod;
+
+        if (period === '10') {
+            url += `&limit=10`;
+        } else {
+            url += `&range=${period}d`;
+        }
+
         const params = buildLocationParams();
         if (params) url += `&${params}`;
 

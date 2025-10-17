@@ -108,7 +108,7 @@ class FloodAlertForm(forms.ModelForm):
             'severity_level': forms.Select(attrs={'class': 'form-select'}),
             'active': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
             'predicted_flood_time': forms.DateTimeInput(attrs={'class': 'form-control', 'type': 'datetime-local'}),
-            'affected_barangays': forms.SelectMultiple(attrs={'class': 'form-select', 'size': 5}),
+            'affected_barangays': forms.CheckboxSelectMultiple(attrs={'class': 'form-check-input'}),
             'scheduled_send_time': forms.DateTimeInput(attrs={'class': 'form-control', 'type': 'datetime-local'}),
         }
 
