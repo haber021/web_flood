@@ -230,14 +230,9 @@
                     </div>
                 </div>
                 <div class="card-footer">
-                    <div class="d-flex justify-content-between align-items-center">
-                        <small class="text-muted">
-                            <i class="fas fa-info-circle me-1"></i> Ordered by risk level.
-                        </small>
-                        <button class="btn btn-sm btn-outline-secondary" id="view-all-barangays">
-                            View All Barangays
-                        </button>
-                    </div>
+                    <small class="text-muted">
+                        <i class="fas fa-info-circle me-1"></i> Ordered by risk level.
+                    </small>
                 </div>
             </div>
         </div>
@@ -253,52 +248,102 @@
                 <div class="card-body">
                     <form method="post" action="{% url 'create_alert' %}" id="alert-form">
                         {% csrf_token %}
-                        
+
                         <div class="mb-3">
-                            <label for="{{ form.title.id_for_label }}" class="form-label">Alert Title</label>
-                            {{ form.title }}
-                        </div>
-                        
-                        <div class="mb-3">
-                            <label for="{{ form.description.id_for_label }}" class="form-label">Description</label>
-                            {{ form.description }}
-                        </div>
-                        
-                        <div class="row mb-3">
-                            <div class="col-md-6">
-                                <label for="{{ form.severity_level.id_for_label }}" class="form-label">Severity Level</label>
-                                {{ form.severity_level }}
+                            <h6 class="border-bottom pb-2"><i class="fas fa-info-circle me-2"></i>Alert Information</h6>
+                            <div class="mb-3">
+                                <label for="{{ form.title.id_for_label }}" class="form-label">Alert Title</label>
+                                {{ form.title }}
                             </div>
-                            <div class="col-md-6">
-                                <label for="{{ form.predicted_flood_time.id_for_label }}" class="form-label">Predicted Flood Time</label>
-                                {{ form.predicted_flood_time }}
+                            <div class="mb-3">
+                                <label for="{{ form.description.id_for_label }}" class="form-label">Description</label>
+                                {{ form.description }}
+                            </div>
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <label for="{{ form.severity_level.id_for_label }}" class="form-label">Severity Level</label>
+                                    {{ form.severity_level }}
+                                </div>
+                                <div class="col-md-6 mb-3 d-flex align-items-center">
+                                    <div class="form-check mt-4">
+                                        {{ form.active }}
+                                        <label class="form-check-label" for="{{ form.active.id_for_label }}">Active Alert</label>
+                                    </div>
+                                </div>
                             </div>
                         </div>
 
                         <div class="mb-3">
-                            <label for="{{ form.scheduled_send_time.id_for_label }}" class="form-label">Schedule Alert Send Time (Optional)</label>
-                            {{ form.scheduled_send_time }}
-                            <div class="form-text">Leave blank to send immediately. Set a future time to schedule the alert.</div>
-                        </div>
-                        
-                        <div class="mb-3">
-                            <label for="{{ form.affected_barangays.id_for_label }}" class="form-label">Affected Barangays</label>
-                            <div class="form-check">
-                                <input class="form-check-input" type="checkbox" id="select-all-barangays">
-                                <label class="form-check-label" for="select-all-barangays">
-                                    Select All
-                                </label>
+                            <h6 class="border-bottom pb-2"><i class="fas fa-clock me-2"></i>Timing</h6>
+                            <div class="row">
+                                <div class="col-md-6 mb-3">
+                                    <label class="form-label">Predicted Flood Time</label>
+                                    <div class="row g-2 align-items-center">
+                                        <div class="col-7">
+                                            <div class="row g-1">
+                                                <div class="col-6">{{ form.predicted_month }}</div>
+                                                <div class="col-6">{{ form.predicted_day }}</div>
+                                            </div>
+                                        </div>
+                                        <div class="col-5">
+                                            {{ form.predicted_time }}
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-6 mb-1">
+                                    <label class="form-label">Schedule Alert Send Time (Optional)</label>
+                                    <div class="row g-2 align-items-center">
+                                        <div class="col-7">
+                                            <div class="row g-1">
+                                                <div class="col-6">{{ form.schedule_month }}</div>
+                                                <div class="col-6">{{ form.schedule_day }}</div>
+                                            </div>
+                                        </div>
+                                        <div class="col-5">
+                                            {{ form.schedule_time }}
+                                        </div>
+                                    </div>
+                                    <div class="form-text">Leave blank to send immediately. Set a future time to schedule the alert.</div>
+                                </div>
                             </div>
-                            {{ form.affected_barangays }}
                         </div>
-                        
-                        <div class="mb-3 form-check">
-                            {{ form.active }}
-                            <label class="form-check-label" for="{{ form.active.id_for_label }}">Active Alert</label>
+
+                        <div class="mb-3">
+                            <h6 class="border-bottom pb-2"><i class="fas fa-map-marker-alt me-2"></i>Affected Areas</h6>
+                            <div class="form-text mb-2">Select specific barangays to target. If left empty, affected barangays will be computed automatically based on thresholds.</div>
+
+                            <div class="barangay-selector" id="barangay-selector">
+                                <div class="d-flex align-items-center mb-2">
+                                    <input type="text" id="barangay-filter" class="form-control form-control-sm" placeholder="Filter barangays by name">
+                                    <div class="ms-2">
+                                        <button type="button" id="select-all-brgy" class="btn btn-sm btn-outline-primary">Select All</button>
+                                        <button type="button" id="clear-all-brgy" class="btn btn-sm btn-outline-secondary ms-1">Clear</button>
+                                    </div>
+                                </div>
+                                <div class="small text-muted mb-2" id="barangay-selected-count">0 selected</div>
+                                <div class="row row-cols-1" id="barangay-checkboxes" style="max-height: 220px; overflow-y: auto;">
+                                    {% for checkbox in form.affected_barangays %}
+                                    <div class="col">
+                                        <div class="form-check">
+                                            {{ checkbox.tag }}
+                                            <label class="form-check-label" for="{{ checkbox.id_for_label }}">{{ checkbox.choice_label }}</label>
+                                        </div>
+                                    </div>
+                                    {% endfor %}
+                                </div>
+                            </div>
                         </div>
-                        
+
+                        <div class="mb-3">
+                            <h6 class="border-bottom pb-2"><i class="fas fa-tasks me-2"></i>Recommended Actions</h6>
+                            {{ form.actions }}
+                            {% if form.actions.help_text %}
+                                <div class="form-text">{{ form.actions.help_text }}</div>
+                            {% endif %}
+                        </div>
+
                         <div class="d-grid">
-                            <button type="submit" class="btn btn-danger">
+                            <button type="submit" class="btn btn-danger" id="send-alert-submit">
                                 <i class="fas fa-exclamation-triangle me-2"></i>Send Emergency Alert
                             </button>
                         </div>
@@ -317,4 +362,136 @@
 
 {% block extra_js %}
 <script src="/static/js/prediction.js"></script>
+<script>
+// Enhance Affected Areas UX: filter, select-all/clear, selected count
+document.addEventListener('DOMContentLoaded', function() {
+    const container = document.getElementById('barangay-selector');
+    if (!container) return;
+    const filterInput = document.getElementById('barangay-filter');
+    const checkboxesWrap = document.getElementById('barangay-checkboxes');
+    const countEl = document.getElementById('barangay-selected-count');
+    const allCheckboxes = Array.from(checkboxesWrap.querySelectorAll('input[type="checkbox"]'));
+
+    function updateCount() {
+        const selected = allCheckboxes.filter(cb => cb.checked).length;
+        countEl.textContent = selected + ' selected';
+    }
+    function filterList() {
+        const q = (filterInput.value || '').toLowerCase();
+        checkboxesWrap.querySelectorAll('.col').forEach(col => {
+            const labelEl = col.querySelector('label');
+            const text = (labelEl?.textContent || '').toLowerCase();
+            col.classList.toggle('d-none', q && !text.includes(q));
+        });
+    }
+
+    document.getElementById('select-all-brgy')?.addEventListener('click', function() {
+        allCheckboxes.forEach(cb => { if (!cb.disabled) cb.checked = true; });
+        updateCount();
+    });
+    document.getElementById('clear-all-brgy')?.addEventListener('click', function() {
+        allCheckboxes.forEach(cb => { if (!cb.disabled) cb.checked = false; });
+        updateCount();
+    });
+
+    filterInput?.addEventListener('input', filterList);
+    allCheckboxes.forEach(cb => cb.addEventListener('change', updateCount));
+
+    updateCount();
+});
+</script>
+<script>
+// Disable submit if selected predicted/schedule datetime is in the past
+(function() {
+  function $(id) { return document.getElementById(id); }
+  function addInvalid(el) { if (el) el.classList.add('is-invalid'); }
+  function removeInvalid(el) { if (el) el.classList.remove('is-invalid'); }
+  function ensureMsg(id, afterEl, text) {
+    let el = document.getElementById(id);
+    if (!el) {
+      el = document.createElement('div');
+      el.id = id;
+      el.className = 'invalid-feedback d-block';
+      if (afterEl && afterEl.parentNode) afterEl.parentNode.appendChild(el);
+    }
+    el.textContent = text || '';
+    el.style.display = text ? '' : 'none';
+  }
+  function clearMsg(id) { const el = $(id); if (el) { el.textContent=''; el.style.display='none'; } }
+
+  function parseIntSafe(v) { const n = parseInt(v, 10); return Number.isFinite(n) ? n : null; }
+  function buildDate(y, m, d, hh, mm) {
+    if (![y,m,d,hh,mm].every(x => x !== null && x !== undefined)) return null;
+    const dt = new Date(y, m - 1, d, hh, mm, 0, 0);
+    // Handle invalid dates like Feb 30 (JS auto-rolls). Ensure components match
+    if (dt.getFullYear() !== y || (dt.getMonth()+1) !== m || dt.getDate() !== d) return null;
+    return dt;
+  }
+
+  function parseTimeStr(str) {
+    if (!str) return [null, null];
+    const parts = str.split(':');
+    if (parts.length < 2) return [null, null];
+    const hh = parseIntSafe(parts[0]);
+    const mm = parseIntSafe(parts[1]);
+    return [hh, mm];
+  }
+
+  function validate() {
+    const submit = $('send-alert-submit');
+    if (!submit) return;
+    const year = new Date().getFullYear();
+    let block = false;
+
+    // Predicted
+    const pm = $('id_predicted_month');
+    const pd = $('id_predicted_day');
+    const pt = $('id_predicted_time');
+    removeInvalid(pm); removeInvalid(pd); removeInvalid(pt);
+    clearMsg('predicted-time-error');
+
+    const m1 = parseIntSafe(pm?.value);
+    const d1 = parseIntSafe(pd?.value);
+    const [hh1, mm1] = parseTimeStr(pt?.value);
+    if (m1 && d1 && (hh1 !== null) && (mm1 !== null)) {
+      const dt1 = buildDate(year, m1, d1, hh1, mm1);
+      if (dt1 && dt1.getTime() < Date.now()) {
+        addInvalid(pd); addInvalid(pt);
+        ensureMsg('predicted-time-error', pt, 'Predicted time cannot be in the past.');
+        block = true;
+      }
+    }
+
+    // Schedule (optional): only validate when fully provided
+    const sm = $('id_schedule_month');
+    const sd = $('id_schedule_day');
+    const st = $('id_schedule_time');
+    removeInvalid(sm); removeInvalid(sd); removeInvalid(st);
+    clearMsg('schedule-time-error');
+
+    const m2 = parseIntSafe(sm?.value);
+    const d2 = parseIntSafe(sd?.value);
+    const [hh2, mm2] = parseTimeStr(st?.value);
+
+    const anyScheduleProvided = (sm && sm.value) || (sd && sd.value) || (st && st.value);
+    if (anyScheduleProvided && m2 && d2 && (hh2 !== null) && (mm2 !== null)) {
+      const dt2 = buildDate(year, m2, d2, hh2, mm2);
+      if (dt2 && dt2.getTime() < Date.now()) {
+        addInvalid(sd); addInvalid(st);
+        ensureMsg('schedule-time-error', st, 'Schedule time cannot be in the past.');
+        block = true;
+      }
+    }
+
+    submit.disabled = !!block;
+  }
+
+  document.addEventListener('DOMContentLoaded', function() {
+    ['id_predicted_month','id_predicted_day','id_predicted_time','id_schedule_month','id_schedule_day','id_schedule_time']
+      .forEach(id => { const el = document.getElementById(id); if (el) el.addEventListener('change', validate); });
+    // initial run
+    validate();
+  });
+})();
+</script>
 {% endblock %}

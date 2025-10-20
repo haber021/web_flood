@@ -25,9 +25,22 @@ class SensorAdminForm(forms.ModelForm):
         if 'longitude' in self.fields:
             self.fields['longitude'].required = False
             self.fields['longitude'].widget = forms.HiddenInput()
+        # Filter barangay queryset based on selected municipality
         if 'barangay' in self.fields:
             self.fields['barangay'].required = False
-            self.fields['barangay'].widget = forms.HiddenInput()
+            # Get municipality from form data (POST) or instance
+            municipality_id = None
+            if self.data and 'municipality' in self.data:
+                municipality_id = self.data.get('municipality')
+            elif self.instance and self.instance.municipality:
+                municipality_id = self.instance.municipality_id
+
+            if municipality_id:
+                self.fields['barangay'].queryset = Barangay.objects.filter(municipality_id=municipality_id)
+            else:
+                self.fields['barangay'].queryset = Barangay.objects.all()
+            # Make barangay field visible for selection
+            self.fields['barangay'].widget = forms.Select()
 
     def clean(self):
         cleaned = super().clean()
@@ -75,6 +88,9 @@ class SensorAdmin(admin.ModelAdmin):
     list_display = ('name', 'sensor_type', 'get_barangay_name', 'active', 'last_updated')
     list_filter = ('sensor_type', 'active', 'barangay', 'municipality')
     search_fields = ('name', 'barangay__name')
+
+    class Media:
+        js = ('admin/js/jquery.init.js', 'admin/js/dynamic_barangay_filter.js')
 
     def save_model(self, request, obj, form, change):
         # Final guard to ensure coordinates exist

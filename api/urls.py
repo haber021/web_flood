@@ -18,6 +18,7 @@ urlpatterns = [
     path('add-sensor-data/', views.add_sensor_data, name='add_sensor_data'),
     path('update-threshold/', views.update_threshold_setting, name='update_threshold_setting'),
     path('prediction/', views.flood_prediction, name='flood_prediction'),
+    path('flood-prediction/', views.get_flood_prediction, name='get_flood_prediction'),
     path('compare-algorithms/', views.compare_prediction_algorithms, name='compare_algorithms'),
     path('map-data/', views.get_map_data, name='get_map_data'),
     path('heatmap/', views.heatmap_points, name='heatmap_points'),
@@ -26,6 +27,8 @@ urlpatterns = [
     path('threshold-visualization/', views.threshold_visualization, name='threshold_visualization'),
     path('threshold-visualization/<str:parameter>/', views.threshold_visualization_parameter, name='threshold_visualization_parameter'),
     path('historical-suggestion/', views.historical_suggestion, name='historical_suggestion'),
+    path('historical-comparison/', views.historical_comparison, name='historical_comparison'),
     path('all-barangays/', views.get_all_barangays, name='get_all_barangays'),
     path('emergency-contacts/', views.get_emergency_contacts, name='get_emergency_contacts'),
+    path('send-emergency-alert/', views.send_emergency_alert, name='send_emergency_alert'),
 ]

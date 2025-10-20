@@ -365,6 +365,38 @@ body {
     background: #888;
 }
 
+/* Emergency Alert Barangay Selector Styles */
+.barangay-selector {
+    max-height: 200px;
+    overflow-y: auto;
+    border: 1px solid #dee2e6;
+    border-radius: 0.375rem;
+    padding: 0.5rem;
+    background-color: #f8f9fa;
+}
+
+.barangay-selector .form-check {
+    margin-bottom: 0.5rem;
+    padding: 0.25rem 0.5rem;
+    border-radius: 0.25rem;
+    transition: background-color 0.2s ease;
+}
+
+.barangay-selector .form-check:hover {
+    background-color: rgba(13, 110, 253, 0.05);
+}
+
+.barangay-selector .form-check-input {
+    margin-top: 0.1rem;
+}
+
+.barangay-selector .form-check-label {
+    font-size: 0.9rem;
+    margin-left: 0.5rem;
+    cursor: pointer;
+}
+
+
 /* Auth pages (login/register) responsive scaling */
 /* Target the full-screen auth container used by login/register */
 .container-fluid.min-vh-100.bg-light > .card {

@@ -37,17 +37,16 @@ class FloodRiskZoneSerializer(serializers.ModelSerializer):
 
 class FloodAlertSerializer(serializers.ModelSerializer):
     issued_by_username = serializers.ReadOnlyField(source='issued_by.username')
-    affected_barangays = BarangaySerializer(many=True, read_only=True)
+    affected_barangays = serializers.PrimaryKeyRelatedField(queryset=Barangay.objects.all(), many=True)
     severity_level_display = serializers.CharField(source='get_severity_level_display', read_only=True)
-    
+
     class Meta:
         model = FloodAlert
         fields = [
-            'id', 'title', 'description', 'severity_level', 'severity_level_display', 
-            'active', 'predicted_flood_time', 'issued_at', 'updated_at', 
-            'affected_barangays', 'issued_by', 'issued_by_username'
+            'id', 'title', 'description', 'severity_level', 'severity_level_display',
+            'active', 'predicted_flood_time', 'issued_at', 'updated_at',
+            'affected_barangays', 'issued_by', 'issued_by_username', 'last_notification_sent_at', 'scheduled_send_time', 'actions'
         ]
-        read_only_fields = ['issued_by', 'issued_at', 'updated_at']
         read_only_fields = ['issued_at', 'updated_at', 'issued_by']
 
 class ThresholdSettingSerializer(serializers.ModelSerializer):

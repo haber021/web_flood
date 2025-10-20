@@ -6,7 +6,7 @@ class SensorForm(forms.ModelForm):
     class Meta:
         model = Sensor
         fields = [
-            'name', 'sensor_type', 'latitude', 'longitude', 'active',
+            'latitude', 'longitude', 'active',
             'municipality', 'barangay', 'description'
         ]
         widgets = {
@@ -16,8 +16,6 @@ class SensorForm(forms.ModelForm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # Add Bootstrap classes and placeholders
-        self.fields['name'].widget.attrs.update({'class': 'form-control', 'placeholder': 'e.g., BACNOTAN_TEMPERATURE'})
-        self.fields['sensor_type'].widget.attrs.update({'class': 'form-select'})
         self.fields['latitude'].widget.attrs.update({'class': 'form-control', 'placeholder': 'Latitude (e.g., 16.720231)'})
         self.fields['longitude'].widget.attrs.update({'class': 'form-control', 'placeholder': 'Longitude (e.g., 120.351557)'})
         self.fields['active'].widget.attrs.update({'class': 'form-check-input'})
@@ -42,19 +40,29 @@ class SensorForm(forms.ModelForm):
                 cleaned['longitude'] = b_lon
                 lat, lon = b_lat, b_lon
             else:
-                self.add_error('barangay', 'Selected barangay has no coordinates defined.')
+                # If barangay has no coordinates, set defaults to avoid errors
+                if lat is None:
+                    cleaned['latitude'] = 0.0
+                if lon is None:
+                    cleaned['longitude'] = 0.0
 
         # Align municipality with selected barangay if not matching
         if barangay and barangay.municipality and (not muni or barangay.municipality_id != getattr(muni, 'id', None)):
             cleaned['municipality'] = barangay.municipality
 
-        # Fallback: if no barangay provided, auto-fill from municipality coordinates
-        if not barangay and muni and (cleaned.get('latitude') is None or cleaned.get('longitude') is None):
+        # Fallback: if no barangay provided or barangay has no coordinates, auto-fill from municipality coordinates
+        if muni and (cleaned.get('latitude') is None or cleaned.get('longitude') is None):
             m_lat = getattr(muni, 'latitude', None)
             m_lon = getattr(muni, 'longitude', None)
             if m_lat is not None and m_lon is not None:
                 cleaned['latitude'] = m_lat
                 cleaned['longitude'] = m_lon
+            else:
+                # If municipality has no coordinates, set defaults to avoid errors
+                if cleaned.get('latitude') is None:
+                    cleaned['latitude'] = 0.0
+                if cleaned.get('longitude') is None:
+                    cleaned['longitude'] = 0.0
 
         # Secondary fallback: derive from municipality's barangays if municipality has no coords
         if (cleaned.get('latitude') is None or cleaned.get('longitude') is None) and muni:
@@ -64,31 +72,46 @@ class SensorForm(forms.ModelForm):
                 if b:
                     cleaned['latitude'] = b.latitude
                     cleaned['longitude'] = b.longitude
+                else:
+                    # If no barangays have coordinates, set defaults
+                    if cleaned.get('latitude') is None:
+                        cleaned['latitude'] = 0.0
+                    if cleaned.get('longitude') is None:
+                        cleaned['longitude'] = 0.0
             except Exception:
-                pass
+                # Set defaults on any error
+                if cleaned.get('latitude') is None:
+                    cleaned['latitude'] = 0.0
+                if cleaned.get('longitude') is None:
+                    cleaned['longitude'] = 0.0
 
-        # Final fallback: set to 0.0 to avoid blocking save
-        if cleaned.get('latitude') is None:
-            cleaned['latitude'] = 0.0
-        if cleaned.get('longitude') is None:
-            cleaned['longitude'] = 0.0
+        # Final fallback: set to 0.0 to avoid blocking save (already handled above)
+        pass
 
         return cleaned
 
     def clean_latitude(self):
         lat = self.cleaned_data.get('latitude')
-        # Allow None here; we'll auto-fill from barangay in clean()
-        if lat is None:
+        # Allow None or empty here; we'll auto-fill from barangay in clean()
+        if lat is None or lat == '':
             return None
+        try:
+            lat = float(lat)
+        except ValueError:
+            raise forms.ValidationError('Latitude must be a number')
         if lat < -90 or lat > 90:
             raise forms.ValidationError('Latitude must be between -90 and 90')
         return lat
 
     def clean_longitude(self):
         lon = self.cleaned_data.get('longitude')
-        # Allow None here; we'll auto-fill from barangay in clean()
-        if lon is None:
+        # Allow None or empty here; we'll auto-fill from barangay in clean()
+        if lon is None or lon == '':
             return None
+        try:
+            lon = float(lon)
+        except ValueError:
+            raise forms.ValidationError('Longitude must be a number')
         if lon < -180 or lon > 180:
             raise forms.ValidationError('Longitude must be between -180 and 180')
         return lon
@@ -99,18 +122,174 @@ from .models import FloodAlert, ThresholdSetting, Barangay, Municipality, UserPr
 
 class FloodAlertForm(forms.ModelForm):
     """Form for creating and editing flood alerts"""
+
+    # Accept HTML datetime-local values (with 'T') and make optional
+    predicted_flood_time = forms.DateTimeField(
+        required=False,
+        input_formats=['%Y-%m-%dT%H:%M', '%Y-%m-%d %H:%M']
+    )
+    scheduled_send_time = forms.DateTimeField(
+        required=False,
+        input_formats=['%Y-%m-%dT%H:%M', '%Y-%m-%d %H:%M']
+    )
+
+    # Admin-like date/time selection: separate date and time inputs for clarity
+    predicted_month = forms.ChoiceField(
+        required=False,
+        choices=[],
+        widget=forms.Select(attrs={'class': 'form-select'})
+    )
+    predicted_day = forms.ChoiceField(
+        required=False,
+        choices=[],
+        widget=forms.Select(attrs={'class': 'form-select'})
+    )
+    predicted_time = forms.TimeField(
+        required=False,
+        widget=forms.TimeInput(format='%H:%M', attrs={'class': 'form-control', 'type': 'time', 'step': '60'})
+    )
+    schedule_month = forms.ChoiceField(
+        required=False,
+        choices=[],
+        widget=forms.Select(attrs={'class': 'form-select'})
+    )
+    schedule_day = forms.ChoiceField(
+        required=False,
+        choices=[],
+        widget=forms.Select(attrs={'class': 'form-select'})
+    )
+    schedule_time = forms.TimeField(
+        required=False,
+        widget=forms.TimeInput(format='%H:%M', attrs={'class': 'form-control', 'type': 'time', 'step': '60'})
+    )
+
+    # Textarea that accepts one action per line; converted to list in clean_actions
+    actions = forms.CharField(
+        required=False,
+        widget=forms.Textarea(attrs={'class': 'form-control', 'rows': 5, 'placeholder': 'One recommended action per line'})
+    )
+
     class Meta:
         model = FloodAlert
-        fields = ['title', 'description', 'severity_level', 'active', 'predicted_flood_time', 'affected_barangays', 'scheduled_send_time']
+        fields = ['title', 'description', 'severity_level', 'active', 'predicted_flood_time', 'scheduled_send_time', 'affected_barangays', 'actions']
         widgets = {
             'title': forms.TextInput(attrs={'class': 'form-control'}),
             'description': forms.Textarea(attrs={'class': 'form-control', 'rows': 4}),
             'severity_level': forms.Select(attrs={'class': 'form-select'}),
             'active': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
-            'predicted_flood_time': forms.DateTimeInput(attrs={'class': 'form-control', 'type': 'datetime-local'}),
+            # Ensure the widget renders and parses the same format as input_formats
+            'predicted_flood_time': forms.DateTimeInput(format='%Y-%m-%dT%H:%M', attrs={'class': 'form-control', 'type': 'datetime-local'}),
+            'scheduled_send_time': forms.DateTimeInput(format='%Y-%m-%dT%H:%M', attrs={'class': 'form-control', 'type': 'datetime-local'}),
             'affected_barangays': forms.CheckboxSelectMultiple(attrs={'class': 'form-check-input'}),
-            'scheduled_send_time': forms.DateTimeInput(attrs={'class': 'form-control', 'type': 'datetime-local'}),
         }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Allow creating alerts without manually selecting barangays; server will compute affected areas.
+        if 'affected_barangays' in self.fields:
+            self.fields['affected_barangays'].required = False
+        # Optional helper text mirroring admin guidance
+        if 'actions' in self.fields:
+            self.fields['actions'].help_text = 'Enter one recommended action per line.'
+        # Pre-populate actions textarea from instance list
+        try:
+            instance = kwargs.get('instance') or getattr(self, 'instance', None)
+            if instance and getattr(instance, 'actions_list', None):
+                self.initial['actions'] = '\n'.join(instance.actions_list)
+        except Exception:
+            pass
+        # Hide raw DateTime fields in favor of split date/time controls
+        if 'predicted_flood_time' in self.fields:
+            self.fields['predicted_flood_time'].widget = forms.HiddenInput()
+        if 'scheduled_send_time' in self.fields:
+            self.fields['scheduled_send_time'].widget = forms.HiddenInput()
+        # Initialize month/day choices and split date/time fields from instance values
+        try:
+            from calendar import month_name
+            month_choices = [('', 'Month')] + [(str(i), month_name[i]) for i in range(1, 13)]
+            day_choices = [('', 'Day')] + [(str(i), str(i)) for i in range(1, 32)]
+            self.fields['predicted_month'].choices = month_choices
+            self.fields['predicted_day'].choices = day_choices
+            self.fields['schedule_month'].choices = month_choices
+            self.fields['schedule_day'].choices = day_choices
+        except Exception:
+            pass
+        try:
+            instance = getattr(self, 'instance', None)
+            from django.utils import timezone as dj_tz
+            if instance and getattr(instance, 'predicted_flood_time', None):
+                ts = instance.predicted_flood_time
+                if dj_tz.is_aware(ts):
+                    ts = dj_tz.localtime(ts)
+                self.initial.setdefault('predicted_month', str(ts.month))
+                self.initial.setdefault('predicted_day', str(ts.day))
+                self.initial.setdefault('predicted_time', ts.time().replace(second=0, microsecond=0))
+            if instance and getattr(instance, 'scheduled_send_time', None):
+                ts2 = instance.scheduled_send_time
+                if dj_tz.is_aware(ts2):
+                    ts2 = dj_tz.localtime(ts2)
+                self.initial.setdefault('schedule_month', str(ts2.month))
+                self.initial.setdefault('schedule_day', str(ts2.day))
+                self.initial.setdefault('schedule_time', ts2.time().replace(second=0, microsecond=0))
+        except Exception:
+            pass
+
+    def clean_actions(self):
+        """Convert textarea content to a list of actions for JSONField compatibility."""
+        actions = self.cleaned_data.get('actions')
+        if isinstance(actions, str):
+            lines = [line.strip() for line in actions.splitlines() if line.strip()]
+            return lines
+        return actions or []
+
+    def clean(self):
+        cleaned = super().clean()
+        from datetime import datetime
+        from django.utils import timezone as dj_tz
+
+        # Combine predicted month/day/time into model field (default year = current year)
+        p_month = cleaned.get('predicted_month')
+        p_day = cleaned.get('predicted_day')
+        p_time = cleaned.get('predicted_time')
+        if p_month and p_day and p_time:
+            try:
+                year = dj_tz.localdate().year
+                dt = datetime(year=int(year), month=int(p_month), day=int(p_day),
+                              hour=p_time.hour, minute=p_time.minute)
+                if dj_tz.is_naive(dt):
+                    dt = dj_tz.make_aware(dt, dj_tz.get_default_timezone())
+                # Reject past datetimes
+                now = dj_tz.now()
+                if dt < now:
+                    self.add_error('predicted_day', 'Predicted time cannot be in the past.')
+                    self.add_error('predicted_time', 'Choose a future time.')
+                else:
+                    cleaned['predicted_flood_time'] = dt
+            except Exception:
+                # Leave field unset on invalid date (e.g., Feb 30)
+                pass
+
+        # Combine schedule month/day/time (default year = current year)
+        s_month = cleaned.get('schedule_month')
+        s_day = cleaned.get('schedule_day')
+        s_time = cleaned.get('schedule_time')
+        if s_month and s_day and s_time:
+            try:
+                year2 = dj_tz.localdate().year
+                dt2 = datetime(year=int(year2), month=int(s_month), day=int(s_day),
+                               hour=s_time.hour, minute=s_time.minute)
+                if dj_tz.is_naive(dt2):
+                    dt2 = dj_tz.make_aware(dt2, dj_tz.get_default_timezone())
+                # Reject past datetimes
+                now2 = dj_tz.now()
+                if dt2 < now2:
+                    self.add_error('schedule_day', 'Schedule time cannot be in the past.')
+                    self.add_error('schedule_time', 'Choose a future time.')
+                else:
+                    cleaned['scheduled_send_time'] = dt2
+            except Exception:
+                pass
+        return cleaned
 
 class ThresholdSettingForm(forms.ModelForm):
     """Form for creating and editing threshold settings"""

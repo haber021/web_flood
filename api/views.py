@@ -4,6 +4,8 @@ from rest_framework.response import Response
 from django.utils import timezone
 from django.db.models import Max, Avg, Sum, Q, Count, Min
 from django.views.decorators.csrf import csrf_exempt
+from django.contrib.auth.decorators import login_required
+from django.http import JsonResponse
 import math
 import logging
 import requests
@@ -34,6 +36,220 @@ from .serializers import (
 )
 
 from core.notifications import dispatch_notifications_for_alert
+
+
+@login_required
+def get_flood_prediction(request):
+    """API endpoint to get flood prediction and decision support based on current sensor data"""
+    try:
+        # Get location filters
+        municipality_id = request.GET.get('municipality_id')
+        barangay_id = request.GET.get('barangay_id')
+
+        # Get current sensor readings with location filtering
+        sensor_filters = {}
+        if barangay_id:
+            sensor_filters['sensor__barangay_id'] = barangay_id
+        elif municipality_id:
+            sensor_filters['sensor__municipality_id'] = municipality_id
+
+        # Get latest readings for key parameters
+        rainfall_reading = SensorData.objects.filter(
+            sensor__sensor_type='rainfall', **sensor_filters
+        ).order_by('-timestamp').first()
+
+        water_level_reading = SensorData.objects.filter(
+            sensor__sensor_type='water_level', **sensor_filters
+        ).order_by('-timestamp').first()
+
+        # Get threshold settings
+        thresholds = {t.parameter: t for t in ThresholdSetting.objects.all()}
+
+        # Calculate prediction score (0-100)
+        prediction_score = 0
+        factors = []
+
+        # Factor 1: Rainfall intensity
+        if rainfall_reading:
+            rainfall_threshold = thresholds.get('rainfall')
+            if rainfall_threshold:
+                rainfall_value = rainfall_reading.value
+                # Normalize rainfall impact (0-40 points)
+                rainfall_impact = min(40, (rainfall_value / rainfall_threshold.warning_threshold) * 40)
+                prediction_score += rainfall_impact
+                factors.append(f"Rainfall: {rainfall_value}mm (threshold: {rainfall_threshold.warning_threshold}mm)")
+
+        # Factor 2: Water level
+        if water_level_reading:
+            water_level_threshold = thresholds.get('water_level')
+            if water_level_threshold:
+                water_level_value = water_level_reading.value
+                # Normalize water level impact (0-40 points)
+                water_level_impact = min(40, (water_level_value / water_level_threshold.warning_threshold) * 40)
+                prediction_score += water_level_impact
+                factors.append(f"Water level: {water_level_value}m (threshold: {water_level_threshold.warning_threshold}m)")
+
+        # Factor 3: Historical flood patterns (10 points)
+        # Check if this location has experienced floods in the past 6 months
+        six_months_ago = timezone.now() - timedelta(days=180)
+        historical_alerts = FloodAlert.objects.filter(
+            affected_barangays__id=barangay_id if barangay_id else None,
+            issued_at__gte=six_months_ago,
+            severity_level__gte=3  # Warning level or higher
+        ).count()
+
+        historical_impact = min(10, historical_alerts * 2)  # 2 points per significant past alert
+        prediction_score += historical_impact
+        if historical_alerts > 0:
+            factors.append(f"Historical alerts: {historical_alerts} significant flood alerts in past 6 months")
+
+        # Factor 4: Resilience score (10 points inverse)
+        resilience_score = ResilienceScore.objects.filter(
+            barangay_id=barangay_id if barangay_id else None,
+            municipality_id=municipality_id if municipality_id else None,
+            is_current=True
+        ).order_by('-assessment_date').first()
+
+        if resilience_score:
+            resilience_impact = max(0, 10 - (resilience_score.overall_score / 10))  # Lower resilience = higher risk
+            prediction_score += resilience_impact
+            factors.append(f"Community resilience: {resilience_score.overall_score}/100")
+
+        # Ensure score is between 0-100
+        prediction_score = min(100, max(0, prediction_score))
+
+        # Determine risk level and suggested actions
+        risk_level, level_numeric, suggested_action, reasons = calculate_risk_assessment(
+            prediction_score, rainfall_reading, water_level_reading, factors
+        )
+
+        # Generate prediction timestamp
+        prediction_time = timezone.now()
+
+        response_data = {
+            'success': True,
+            'prediction': {
+                'score': round(prediction_score, 1),
+                'risk_level': risk_level,
+                'level_numeric': level_numeric,
+                'subject': f"Flood Risk Assessment - {risk_level} Risk",
+                'suggested_action': suggested_action,
+                'reasons': reasons,
+                'factors_considered': factors,
+                'timestamp': _iso_timestamp(prediction_time),
+                'timestamp_display': _manila_str(prediction_time),
+                'location': get_location_name(municipality_id, barangay_id)
+            },
+            'sensor_data': {
+                'rainfall': {
+                    'value': rainfall_reading.value if rainfall_reading else None,
+                    'unit': 'mm',
+                    'timestamp': _iso_timestamp(rainfall_reading.timestamp) if rainfall_reading else None
+                },
+                'water_level': {
+                    'value': water_level_reading.value if water_level_reading else None,
+                    'unit': 'm',
+                    'timestamp': _iso_timestamp(water_level_reading.timestamp) if water_level_reading else None
+                }
+            }
+        }
+
+        return JsonResponse(response_data)
+
+    except Exception as e:
+        return JsonResponse({
+            'success': False,
+            'error': str(e),
+            'prediction': {
+                'score': 0,
+                'risk_level': 'Unknown',
+                'level_numeric': 0,
+                'subject': 'Prediction Unavailable',
+                'suggested_action': 'Check sensor connectivity and try again',
+                'reasons': ['System temporarily unavailable'],
+                'timestamp': _iso_timestamp(timezone.now())
+            }
+        })
+
+
+def calculate_risk_assessment(score, rainfall_reading, water_level_reading, factors):
+    """Calculate risk assessment based on prediction score and sensor data"""
+
+    if score >= 80:
+        level_numeric = 5
+        risk_level = "Severe"
+        suggested_action = "IMMEDIATE EVACUATION: Activate emergency protocols, evacuate high-risk areas, and deploy emergency response teams."
+        reasons = [
+            "Extremely high flood risk detected",
+            "Critical threshold levels exceeded",
+            "Immediate danger to life and property"
+        ]
+
+    elif score >= 65:
+        level_numeric = 4
+        risk_level = "High"
+        suggested_action = "PREPARE FOR EVACUATION: Alert residents in flood-prone areas, prepare evacuation centers, and monitor continuously."
+        reasons = [
+            "High probability of flooding",
+            "Multiple risk factors converging",
+            "Prepare emergency response"
+        ]
+
+    elif score >= 45:
+        level_numeric = 3
+        risk_level = "Moderate"
+        suggested_action = "HEIGHTENED AWARENESS: Issue public warnings, check drainage systems, and prepare emergency supplies."
+        reasons = [
+            "Elevated flood risk conditions",
+            "Monitor weather developments closely",
+            "Some protective measures recommended"
+        ]
+
+    elif score >= 25:
+        level_numeric = 2
+        risk_level = "Low"
+        suggested_action = "STAY INFORMED: Monitor weather updates, clear drainage paths, and review emergency plans."
+        reasons = [
+            "Some risk factors present",
+            "Continue normal activities with caution",
+            "Stay updated on weather conditions"
+        ]
+
+    else:
+        level_numeric = 1
+        risk_level = "Minimal"
+        suggested_action = "NORMAL OPERATIONS: Continue routine monitoring and maintenance activities."
+        reasons = [
+            "Low flood risk conditions",
+            "No immediate threat detected",
+            "Favorable weather patterns"
+        ]
+
+    # Add specific reasons based on sensor data
+    if rainfall_reading and rainfall_reading.value > 50:  # Heavy rainfall
+        reasons.append("Heavy rainfall detected")
+    if water_level_reading and water_level_reading.value > 2.0:  # High water level
+        reasons.append("Elevated water levels observed")
+
+    return risk_level, level_numeric, suggested_action, reasons
+
+
+def get_location_name(municipality_id, barangay_id):
+    """Get human-readable location name"""
+    if barangay_id:
+        try:
+            barangay = Barangay.objects.get(id=barangay_id)
+            return f"{barangay.name}, {barangay.municipality.name if barangay.municipality else 'Unknown Municipality'}"
+        except Barangay.DoesNotExist:
+            pass
+    elif municipality_id:
+        try:
+            municipality = Municipality.objects.get(id=municipality_id)
+            return municipality.name
+        except Municipality.DoesNotExist:
+            pass
+
+    return "All Areas"
 
 
 @api_view(['GET'])
@@ -72,6 +288,92 @@ def get_emergency_contacts(request):
         'count': len(contacts_data),
         'results': contacts_data
     })
+
+@api_view(['POST'])
+@permission_classes([permissions.AllowAny])
+def send_emergency_alert(request):
+    """API endpoint to send emergency alert to affected barangays"""
+    try:
+        # Get parameters from request
+        title = request.data.get('title')
+        description = request.data.get('description')
+        severity_level = request.data.get('severity_level', 3)  # Default to Warning
+        affected_barangay_ids = request.data.get('affected_barangays', [])
+        actions = request.data.get('actions', [])
+
+        # Validate required fields
+        if not title or not description:
+            return Response({
+                'success': False,
+                'message': 'Title and description are required'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        if not affected_barangay_ids:
+            return Response({
+                'success': False,
+                'message': 'At least one affected barangay must be specified'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Get barangay objects
+        try:
+            affected_barangays = Barangay.objects.filter(id__in=affected_barangay_ids)
+            if len(affected_barangays) != len(affected_barangay_ids):
+                return Response({
+                    'success': False,
+                    'message': 'One or more barangay IDs are invalid'
+                }, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({
+                'success': False,
+                'message': f'Error retrieving barangays: {str(e)}'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        # Append barangay names to the title if any are selected
+        if affected_barangays:
+            barangay_names = ', '.join([b.name for b in affected_barangays])
+            title = f"{title} - {barangay_names}"
+
+        # Create the alert
+        alert = FloodAlert.objects.create(
+            title=title,
+            description=description,
+            severity_level=severity_level,
+            active=True,
+            actions=actions
+        )
+
+        # Add affected barangays
+        alert.affected_barangays.set(affected_barangays)
+
+        # Send notifications
+        try:
+            dispatch_notifications_for_alert(alert)
+            alert.last_notification_sent_at = timezone.now()
+            alert.save(update_fields=['last_notification_sent_at'])
+        except Exception as e:
+            logger.error(f"Failed to send notifications for alert {alert.id}: {str(e)}")
+            # Don't fail the whole request if notifications fail
+
+        # Return success response
+        return Response({
+            'success': True,
+            'alert_id': alert.id,
+            'message': f'Emergency alert sent to {len(affected_barangays)} barangay(s)',
+            'affected_barangays': [
+                {
+                    'id': b.id,
+                    'name': b.name,
+                    'municipality': b.municipality.name if b.municipality else None
+                } for b in affected_barangays
+            ]
+        }, status=status.HTTP_201_CREATED)
+
+    except Exception as e:
+        logger.error(f"Error sending emergency alert: {str(e)}")
+        return Response({
+            'success': False,
+            'message': f'An error occurred: {str(e)}'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 class SensorViewSet(viewsets.ReadOnlyModelViewSet):
     """API endpoint for sensors"""
     queryset = Sensor.objects.all()
@@ -578,25 +880,25 @@ class FloodAlertViewSet(viewsets.ModelViewSet):
     queryset = FloodAlert.objects.all().order_by('-issued_at')
     serializer_class = FloodAlertSerializer
     permission_classes = [permissions.AllowAny]
-    
+
     def get_queryset(self):
         queryset = FloodAlert.objects.all().order_by('-issued_at')
         active = self.request.query_params.get('active', None)
         severity = self.request.query_params.get('severity', None)
         municipality_id = self.request.query_params.get('municipality_id', None)
         barangay_id = self.request.query_params.get('barangay_id', None)
-        
+
         if active:
             active_bool = active.lower() == 'true'
             queryset = queryset.filter(active=active_bool)
-        
+
         if severity:
             queryset = queryset.filter(severity_level=severity)
-            
+
         if municipality_id:
             # Filter alerts by affected barangays within the municipality
             queryset = queryset.filter(affected_barangays__municipality_id=municipality_id).distinct()
-        
+
         if barangay_id:
             # Prefer alerts specifically targeting this barangay (single-target) over
             # municipality-wide or legacy alerts that include many barangays.
@@ -607,11 +909,17 @@ class FloodAlertViewSet(viewsets.ModelViewSet):
                 .annotate(affected_count=Count('affected_barangays', distinct=True))
                 .order_by('affected_count', '-severity_level', '-issued_at')
             )
-            
+
         return queryset
-    
+
     def perform_create(self, serializer):
         serializer.save(issued_by=self.request.user)
+
+    def perform_update(self, serializer):
+        instance = serializer.save()
+        # Send notifications if the alert is active and has affected barangays
+        if instance.active and instance.affected_barangays.exists():
+            dispatch_notifications_for_alert(instance)
 
 class FloodRiskZoneViewSet(viewsets.ReadOnlyModelViewSet):
     """API endpoint for flood risk zones"""
@@ -2084,155 +2392,179 @@ def historical_suggestion(request):
     Returns:
       - subject, level (text), level_numeric (0-5), reasons, metrics
     """
-    data_type = request.GET.get('type', 'rainfall')
     try:
-        days = int(request.GET.get('days', 7))
-    except Exception:
-        days = 7
+        data_type = request.GET.get('type', 'rainfall')
+        try:
+            days = int(request.GET.get('days', 7))
+        except Exception:
+            days = 7
 
-    municipality_id = request.GET.get('municipality_id')
-    barangay_id = request.GET.get('barangay_id')
+        municipality_id = request.GET.get('municipality_id')
+        barangay_id = request.GET.get('barangay_id')
 
-    # Build filters
-    sensor_filters = {'sensor__sensor_type': data_type}
-    if municipality_id:
-        sensor_filters['sensor__municipality_id'] = municipality_id
-    if barangay_id:
-        sensor_filters['sensor__barangay_id'] = barangay_id
+        # Build filters
+        sensor_filters = {'sensor__sensor_type': data_type}
+        if municipality_id:
+            sensor_filters['sensor__municipality_id'] = municipality_id
+        if barangay_id:
+            sensor_filters['sensor__barangay_id'] = barangay_id
 
-    # Time windows
-    end_date = timezone.now()
-    start_date = end_date - timedelta(days=days)
-    prev_start = start_date - timedelta(days=365)
-    prev_end = end_date - timedelta(days=365)
+        # Time windows
+        end_date = timezone.now()
+        start_date = end_date - timedelta(days=days)
+        prev_start = start_date - timedelta(days=365)
+        prev_end = end_date - timedelta(days=365)
 
-    # Query current values
-    current_qs = SensorData.objects.filter(
-        timestamp__gte=start_date,
-        timestamp__lte=end_date,
-        **sensor_filters
-    )
-    current_stats = current_qs.aggregate(avg=Avg('value'), max=Max('value'), count=Count('id'))
+        # Query current values
+        current_qs = SensorData.objects.filter(
+            timestamp__gte=start_date,
+            timestamp__lte=end_date,
+            **sensor_filters
+        )
+        current_stats = current_qs.aggregate(avg=Avg('value'), max=Max('value'), count=Count('id'))
 
-    # Query historical (same period last year)
-    historical_qs = SensorData.objects.filter(
-        timestamp__gte=prev_start,
-        timestamp__lte=prev_end,
-        **sensor_filters
-    )
-    historical_stats = historical_qs.aggregate(avg=Avg('value'), max=Max('value'), count=Count('id'))
+        # Query historical (same period last year)
+        historical_qs = SensorData.objects.filter(
+            timestamp__gte=prev_start,
+            timestamp__lte=prev_end,
+            **sensor_filters
+        )
+        historical_stats = historical_qs.aggregate(avg=Avg('value'), max=Max('value'), count=Count('id'))
 
-    # Compute metrics
-    current_avg = float(current_stats['avg']) if current_stats['avg'] is not None else 0.0
-    current_max = float(current_stats['max']) if current_stats['max'] is not None else 0.0
-    hist_avg = float(historical_stats['avg']) if historical_stats['avg'] is not None else (current_avg * 0.85)
+        # Compute metrics
+        current_avg = float(current_stats['avg']) if current_stats['avg'] is not None else 0.0
+        current_max = float(current_stats['max']) if current_stats['max'] is not None else 0.0
+        hist_avg = float(historical_stats['avg']) if historical_stats['avg'] is not None else (current_avg * 0.85)
 
-    deviation_pct = 0.0
-    if hist_avg > 0:
-        deviation_pct = ((current_avg - hist_avg) / hist_avg) * 100.0
+        deviation_pct = 0.0
+        if hist_avg > 0:
+            deviation_pct = ((current_avg - hist_avg) / hist_avg) * 100.0
 
-    reasons = []
-    level_numeric = 0
-    level_text = 'Normal'
+        reasons = []
+        level_numeric = 0
+        level_text = 'Normal'
 
-    # Try to leverage configured thresholds when available for water_level
-    threshold = None
-    try:
-        if data_type in ['water_level', 'rainfall']:
-            threshold = ThresholdSetting.objects.filter(parameter=data_type).first()
-    except Exception:
+        # Try to leverage configured thresholds when available for water_level
         threshold = None
+        try:
+            if data_type in ['water_level', 'rainfall']:
+                threshold = ThresholdSetting.objects.filter(parameter=data_type).first()
+        except Exception:
+            threshold = None
 
-    # Suggestion logic
-    if data_type == 'rainfall':
-        # Heuristics for rainfall
-        if current_max >= 150 or deviation_pct >= 120:
-            level_numeric = 4
-            level_text = 'Emergency'
-            reasons.append('Extreme rainfall spikes or far above historical norms')
-        elif current_max >= 100 or deviation_pct >= 90:
-            level_numeric = 3
-            level_text = 'Warning'
-            reasons.append('Very heavy rainfall and substantially above historical norms')
-        elif current_avg >= 25 or deviation_pct >= 50:
-            level_numeric = 2
-            level_text = 'Watch'
-            reasons.append('Sustained heavy rainfall relative to historical averages')
-        elif current_avg >= 10 or deviation_pct >= 20:
-            level_numeric = 1
-            level_text = 'Advisory'
-            reasons.append('Rainfall trending above normal levels')
-        else:
-            level_numeric = 0
-            level_text = 'Normal'
-            reasons.append('Rainfall near or below historical norms')
-
-        if current_max > 0:
-            reasons.append(f'Max 24h rainfall observed: {current_max:.1f} mm')
-        reasons.append(f'Average vs historical: {current_avg:.1f} vs {hist_avg:.1f} mm ({deviation_pct:.0f}% change)')
-
-    elif data_type == 'water_level':
-        # Use configured thresholds if available
-        if threshold:
-            if current_max > threshold.catastrophic_threshold:
-                level_numeric = 5; level_text = 'Catastrophic'; reasons.append('Water level reached catastrophic threshold')
-            elif current_max > threshold.emergency_threshold:
-                level_numeric = 4; level_text = 'Emergency'; reasons.append('Water level reached emergency threshold')
-            elif current_max > threshold.warning_threshold:
-                level_numeric = 3; level_text = 'Warning'; reasons.append('Water level reached warning threshold')
-            elif current_max > threshold.watch_threshold:
-                level_numeric = 2; level_text = 'Watch'; reasons.append('Water level reached watch threshold')
-            elif current_max > threshold.advisory_threshold:
-                level_numeric = 1; level_text = 'Advisory'; reasons.append('Water level reached advisory threshold')
+        # Suggestion logic
+        if data_type == 'rainfall':
+            # Heuristics for rainfall
+            if current_max >= 150 or deviation_pct >= 120:
+                level_numeric = 4
+                level_text = 'Emergency'
+                reasons.append('Extreme rainfall spikes or far above historical norms')
+            elif current_max >= 100 or deviation_pct >= 90:
+                level_numeric = 3
+                level_text = 'Warning'
+                reasons.append('Very heavy rainfall and substantially above historical norms')
+            elif current_avg >= 25 or deviation_pct >= 50:
+                level_numeric = 2
+                level_text = 'Watch'
+                reasons.append('Sustained heavy rainfall relative to historical averages')
+            elif current_avg >= 10 or deviation_pct >= 20:
+                level_numeric = 1
+                level_text = 'Advisory'
+                reasons.append('Rainfall trending above normal levels')
             else:
-                level_numeric = 0; level_text = 'Normal'; reasons.append('Water level below advisory threshold')
-        else:
-            # Fallback heuristics if thresholds missing
-            if current_max > 1.8 or deviation_pct > 80:
-                level_numeric = 4; level_text = 'Emergency'; reasons.append('Water level far above typical levels')
-            elif current_max > 1.5 or deviation_pct > 50:
-                level_numeric = 3; level_text = 'Warning'; reasons.append('Water level significantly above typical levels')
-            elif current_max > 1.2 or deviation_pct > 20:
-                level_numeric = 2; level_text = 'Watch'; reasons.append('Water level trending higher than normal')
-            elif current_max > 1.0 or deviation_pct > 10:
-                level_numeric = 1; level_text = 'Advisory'; reasons.append('Water level slightly above normal')
+                level_numeric = 0
+                level_text = 'Normal'
+                reasons.append('Rainfall near or below historical norms')
+
+            if current_max > 0:
+                reasons.append(f'Max 24h rainfall observed: {current_max:.1f} mm')
+            reasons.append(f'Average vs historical: {current_avg:.1f} vs {hist_avg:.1f} mm ({deviation_pct:.0f}% change)')
+
+        elif data_type == 'water_level':
+            # Use configured thresholds if available
+            if threshold:
+                if current_max > threshold.catastrophic_threshold:
+                    level_numeric = 5; level_text = 'Catastrophic'; reasons.append('Water level reached catastrophic threshold')
+                elif current_max > threshold.emergency_threshold:
+                    level_numeric = 4; level_text = 'Emergency'; reasons.append('Water level reached emergency threshold')
+                elif current_max > threshold.warning_threshold:
+                    level_numeric = 3; level_text = 'Warning'; reasons.append('Water level reached warning threshold')
+                elif current_max > threshold.watch_threshold:
+                    level_numeric = 2; level_text = 'Watch'; reasons.append('Water level reached watch threshold')
+                elif current_max > threshold.advisory_threshold:
+                    level_numeric = 1; level_text = 'Advisory'; reasons.append('Water level reached advisory threshold')
+                else:
+                    level_numeric = 0; level_text = 'Normal'; reasons.append('Water level below advisory threshold')
             else:
-                level_numeric = 0; level_text = 'Normal'; reasons.append('Water level within normal range')
+                # Fallback heuristics if thresholds missing
+                if current_max > 1.8 or deviation_pct > 80:
+                    level_numeric = 4; level_text = 'Emergency'; reasons.append('Water level far above typical levels')
+                elif current_max > 1.5 or deviation_pct > 50:
+                    level_numeric = 3; level_text = 'Warning'; reasons.append('Water level significantly above typical levels')
+                elif current_max > 1.2 or deviation_pct > 20:
+                    level_numeric = 2; level_text = 'Watch'; reasons.append('Water level trending higher than normal')
+                elif current_max > 1.0 or deviation_pct > 10:
+                    level_numeric = 1; level_text = 'Advisory'; reasons.append('Water level slightly above normal')
+                else:
+                    level_numeric = 0; level_text = 'Normal'; reasons.append('Water level within normal range')
 
-        reasons.append(f'Max water level: {current_max:.2f} {threshold.unit if threshold else "m"}')
-        reasons.append(f'Average vs historical: {current_avg:.2f} vs {hist_avg:.2f} ({deviation_pct:.0f}% change)')
+            reasons.append(f'Max water level: {current_max:.2f} {threshold.unit if threshold else "m"}')
+            reasons.append(f'Average vs historical: {current_avg:.2f} vs {hist_avg:.2f} ({deviation_pct:.0f}% change)')
 
-    # Subject and action
-    subject = f"Decision Support: {level_text} recommended for {data_type.replace('_',' ').title()}"
-    suggested_action = {
-        0: 'No action required. Continue monitoring.',
-        1: 'Issue Advisory and inform monitoring teams.',
-        2: 'Issue Watch and prepare response resources.',
-        3: 'Issue Warning and activate response plans.',
-        4: 'Issue Emergency alert and consider evacuations.',
-        5: 'Issue Catastrophic alert. Immediate evacuation recommended.'
-    }.get(level_numeric, 'Continue monitoring.')
+        # Subject and action
+        subject = f"Decision Support: {level_text} recommended for {data_type.replace('_',' ').title()}"
+        suggested_action = {
+            0: 'No action required. Continue monitoring.',
+            1: 'Issue Advisory and inform monitoring teams.',
+            2: 'Issue Watch and prepare response resources.',
+            3: 'Issue Warning and activate response plans.',
+            4: 'Issue Emergency alert and consider evacuations.',
+            5: 'Issue Catastrophic alert. Immediate evacuation recommended.'
+        }.get(level_numeric, 'Continue monitoring.')
 
-    return Response({
-        'type': data_type,
-        'days': days,
-        'subject': subject,
-        'level': level_text,
-        'level_numeric': level_numeric,
-        'suggested_action': suggested_action,
-        'reasons': reasons,
-        'metrics': {
-            'current_avg': round(current_avg, 2),
-            'historical_avg': round(hist_avg, 2),
-            'deviation_pct': round(deviation_pct, 1),
-            'current_max': round(current_max, 2),
-            'count': current_stats['count'] or 0
-        },
-        'time_window': {
-            'start': start_date.isoformat(),
-            'end': end_date.isoformat()
-        }
-    })
+        return Response({
+            'type': data_type,
+            'days': days,
+            'subject': subject,
+            'level': level_text,
+            'level_numeric': level_numeric,
+            'suggested_action': suggested_action,
+            'reasons': reasons,
+            'metrics': {
+                'current_avg': round(current_avg, 2),
+                'historical_avg': round(hist_avg, 2),
+                'deviation_pct': round(deviation_pct, 1),
+                'current_max': round(current_max, 2),
+                'count': current_stats['count'] or 0
+            },
+            'time_window': {
+                'start': start_date.isoformat(),
+                'end': end_date.isoformat()
+            }
+        })
+    except Exception as e:
+        logger.error(f"Error in historical_suggestion: {e}")
+        # Return a default response instead of failing
+        return Response({
+            'type': request.GET.get('type', 'rainfall'),
+            'days': 7,
+            'subject': 'Decision Support: Normal conditions',
+            'level': 'Normal',
+            'level_numeric': 0,
+            'suggested_action': 'No action required. Continue monitoring.',
+            'reasons': ['Insufficient data for historical comparison. System operating normally.'],
+            'metrics': {
+                'current_avg': 0.0,
+                'historical_avg': 0.0,
+                'deviation_pct': 0.0,
+                'current_max': 0.0,
+                'count': 0
+            },
+            'time_window': {
+                'start': (timezone.now() - timedelta(days=7)).isoformat(),
+                'end': timezone.now().isoformat()
+            }
+        })
 
 
 @api_view(['GET'])
@@ -2384,6 +2716,106 @@ def threshold_visualization_parameter(request, parameter):
         'generated_at': timezone.now(),
         'parameter': t.parameter,
         'data': data
+    })
+
+
+@api_view(['GET'])
+@permission_classes([permissions.AllowAny])
+def historical_comparison(request):
+    """API endpoint to display sensor data entries for historical comparison over different periods.
+
+    Query params:
+      - sensor_type: temperature|humidity|rainfall|water_level|wind_speed (optional)
+      - municipality_id (optional)
+      - barangay_id (optional)
+      - period: 7|30|365 (days, optional, default 7)
+      - limit: integer (default 10 for latest, max 100)
+
+    Response:
+    {
+      "count": 10,
+      "period": "7",
+      "results": [
+        {
+          "id": int,
+          "sensor_id": int,
+          "sensor_name": str,
+          "sensor_type": str,
+          "value": float,
+          "timestamp": ISO8601,
+          "municipality_name": str,
+          "barangay_name": str,
+          "latitude": float,
+          "longitude": float
+        }, ...
+      ]
+    }
+    """
+    # Get query parameters
+    sensor_type = request.GET.get('sensor_type')
+    municipality_id = request.GET.get('municipality_id')
+    barangay_id = request.GET.get('barangay_id')
+    period = request.GET.get('period', '7')
+
+    try:
+        limit = int(request.GET.get('limit', 10))
+        if limit <= 0:
+            limit = 10
+        elif limit > 100:
+            limit = 100  # Cap at 100 for performance
+    except ValueError:
+        limit = 10
+
+    # Build queryset
+    queryset = SensorData.objects.select_related('sensor__municipality', 'sensor__barangay').order_by('-timestamp')
+
+    # Apply filters
+    if sensor_type:
+        queryset = queryset.filter(sensor__sensor_type=sensor_type)
+
+    if municipality_id:
+        queryset = queryset.filter(sensor__municipality_id=municipality_id)
+
+    if barangay_id:
+        queryset = queryset.filter(sensor__barangay_id=barangay_id)
+
+    # Apply time-based filtering for historical periods
+    if period in ['7', '30', '365']:
+        days = int(period)
+        start_date = timezone.now() - timedelta(days=days)
+        queryset = queryset.filter(timestamp__gte=start_date)
+
+    # Limit to the specified number of latest entries
+    queryset = queryset[:limit]
+
+    # Format the response
+    results = []
+    for data in queryset:
+        results.append({
+            'id': data.id,
+            'sensor_id': data.sensor.id,
+            'sensor_name': data.sensor.name,
+            'sensor_type': data.sensor.sensor_type,
+            'value': data.value,
+            'timestamp': data.timestamp.isoformat(),
+            'municipality_name': data.sensor.municipality.name if data.sensor.municipality else None,
+            'barangay_name': data.sensor.barangay.name if data.sensor.barangay else None,
+            'latitude': data.sensor.latitude,
+            'longitude': data.sensor.longitude,
+            'accuracy_rating': data.accuracy_rating
+        })
+
+    return Response({
+        'count': len(results),
+        'period': period,
+        'results': results,
+        'filters': {
+            'sensor_type': sensor_type,
+            'municipality_id': municipality_id,
+            'barangay_id': barangay_id,
+            'period': period,
+            'limit': limit
+        }
     })
 
 

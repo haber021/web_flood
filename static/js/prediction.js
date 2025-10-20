@@ -1,395 +1,481 @@
-// static/js/prediction.js
-
 document.addEventListener('DOMContentLoaded', function() {
-    // --- STATE ---
-    const state = {
-        historicalChart: null,
-        historicalDataType: 'rainfall', // 'rainfall' or 'water_level'
-        historicalPeriod: '10', // '7', '30', '365'
-        municipalityId: null,
-        barangayId: null,
-    };
+    const searchInput = document.getElementById('barangay-search');
+    const barangaysBody = document.getElementById('affected-barangays');
+    const refreshButton = document.getElementById('refresh-prediction');
 
-    // --- INITIALIZATION ---
-    function initialize() {
-        initLocationSelectors();
-        initHistoricalChart();
-        bindHistoricalChartControls();
-        bindPredictionControls();
+    // Historical chart variables
+    let historicalChart = null;
+    let currentChartType = 'rainfall';
+    let currentPeriod = '10';
 
-        // Initial data load
-        refreshAll();
+    // Initialize variables that were missing
+    let municipalityId = null;
+    let barangayId = null;
+
+    // Check if elements exist before adding event listeners
+    if (searchInput) {
+        searchInput.addEventListener('keyup', function(event) {
+            const searchTerm = event.target.value.toLowerCase();
+            const rows = Array.from(barangaysBody.getElementsByTagName('tr'));
+
+            rows.forEach(function(row) {
+                const firstCell = row.querySelector('td:first-child');
+                if (firstCell) {
+                    const barangayName = firstCell.textContent.toLowerCase();
+                    if (barangayName.includes(searchTerm)) {
+                        row.style.display = '';
+                    } else {
+                        row.style.display = 'none';
+                    }
+                }
+            });
+        });
     }
 
-    // --- LOCATION SELECTORS ---
-    function initLocationSelectors() {
-        // This would be similar to the dashboard, but for simplicity, we'll just read from it if it exists
-        // For a standalone prediction page, you'd populate these dropdowns.
-        // We will assume the global `location-select` and `barangay-select` from `base.html` are used.
-        const muniSelect = document.getElementById('location-select');
-        const brgySelect = document.getElementById('barangay-select');
+    // Initialize historical chart
+    initializeHistoricalChart();
 
-        if (muniSelect) {
-            muniSelect.addEventListener('change', () => {
-                state.municipalityId = muniSelect.value || null;
-                state.barangayId = null; // Reset barangay
-                if (brgySelect) brgySelect.value = '';
-                updateLocationDisplay();
-                refreshAll();
-            });
-        }
-
-        if (brgySelect) {
-            brgySelect.addEventListener('change', () => {
-                state.barangayId = brgySelect.value || null;
-                updateLocationDisplay();
-                refreshAll();
-            });
-        }
+    // Historical chart button handlers - check if elements exist
+    const rainfallBtn = document.getElementById('btn-rainfall-history');
+    const waterLevelBtn = document.getElementById('btn-water-level-history');
+    
+    if (rainfallBtn) {
+        rainfallBtn.addEventListener('click', function() {
+            currentChartType = 'rainfall';
+            updateChartButtons('rainfall');
+            loadHistoricalData();
+            fetchHistoricalSuggestion(municipalityId, barangayId, currentChartType, currentPeriod);
+        });
     }
 
-    function updateLocationDisplay() {
-        const display = document.getElementById('current-location-display');
-        if (!display) return;
+    if (waterLevelBtn) {
+        waterLevelBtn.addEventListener('click', function() {
+            currentChartType = 'water_level';
+            updateChartButtons('water_level');
+            loadHistoricalData();
+            fetchHistoricalSuggestion(municipalityId, barangayId, currentChartType, currentPeriod);
+        });
+    }
 
-        const muniSelect = document.getElementById('location-select');
-        const brgySelect = document.getElementById('barangay-select');
+    // Period button handlers
+    document.querySelectorAll('.btn-group-sm .btn[data-period]').forEach(button => {
+        button.addEventListener('click', function() {
+            currentPeriod = this.getAttribute('data-period');
+            updatePeriodButtons(currentPeriod);
+            loadHistoricalData();
+            fetchHistoricalSuggestion(municipalityId, barangayId, currentChartType, currentPeriod);
+        });
+    });
 
-        let text = 'All Areas';
-        if (state.municipalityId && muniSelect) {
-            const muniOption = muniSelect.options[muniSelect.selectedIndex];
-            text = muniOption ? muniOption.text : 'All Areas';
-        }
-        if (state.barangayId && brgySelect) {
-            const brgyOption = brgySelect.options[brgySelect.selectedIndex];
-            if (brgyOption && brgyOption.value) {
-                text += ` > ${brgyOption.text}`;
+    // Refresh Prediction functionality
+    if (refreshButton) {
+        refreshButton.addEventListener('click', function() {
+            refreshPrediction();
+        });
+    }
+
+    function refreshPrediction() {
+        // Show loading state
+        refreshButton.disabled = true;
+        refreshButton.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i> Refreshing...';
+
+        // Get current location filters (if any)
+        const urlParams = new URLSearchParams(window.location.search);
+        municipalityId = urlParams.get('municipality_id');
+        barangayId = urlParams.get('barangay_id');
+
+        // Build API URL
+        let apiUrl = '/api/prediction/';
+        const params = new URLSearchParams();
+        if (municipalityId) params.append('municipality_id', municipalityId);
+        if (barangayId) params.append('barangay_id', barangayId);
+        if (params.toString()) apiUrl += '?' + params.toString();
+
+        // Make API call for prediction
+        fetch(apiUrl)
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                // Update prediction display
+                updatePredictionDisplay(data);
+
+                // Update affected barangays
+                updateAffectedBarangays(data.affected_barangays || []);
+
+                // Update summary stats
+                updateSummaryStats(data);
+
+                // Update last prediction time
+                const now = new Date();
+                const lastPredictionTime = document.getElementById('last-prediction-time');
+                if (lastPredictionTime) {
+                    lastPredictionTime.textContent = now.toLocaleString('en-US', {
+                        year: 'numeric',
+                        month: 'short',
+                        day: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit'
+                    });
+                }
+
+                // Update prediction status
+                const predictionStatus = document.getElementById('prediction-status');
+                if (predictionStatus) {
+                    predictionStatus.textContent = 'Updated';
+                    predictionStatus.className = 'badge bg-success text-white';
+                }
+
+                // Auto-fill Predicted Flood Time and Scheduled Send Time inputs
+                try {
+                    const toLocalInputValue = (d) => {
+                        const pad = n => String(n).padStart(2, '0');
+                        return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+                    };
+                    const predictedInput = document.getElementById('id_predicted_flood_time');
+                    const scheduleInput = document.getElementById('id_scheduled_send_time');
+                    if (data.flood_time) {
+                        const floodTime = new Date(data.flood_time);
+                        if (predictedInput) {
+                            predictedInput.value = toLocalInputValue(new Date(floodTime));
+                        }
+                        if (scheduleInput) {
+                            const nowLocal = new Date();
+                            let sched = new Date(floodTime.getTime() - 30 * 60 * 1000); // 30 minutes before
+                            if (sched < nowLocal) {
+                                // If predicted is too soon, set schedule 5 minutes from now
+                                sched = new Date(nowLocal.getTime() + 5 * 60 * 1000);
+                            }
+                            scheduleInput.value = toLocalInputValue(sched);
+                        }
+                    }
+                } catch (e) {
+                    console.warn('Could not auto-fill predicted/scheduled times:', e);
+                }
+
+                // Fetch historical suggestion data
+                fetchHistoricalSuggestion(municipalityId, barangayId);
+
+                // Load historical chart data
+                loadHistoricalData();
+            })
+            .catch(error => {
+                console.error('Error refreshing prediction:', error);
+                const predictionStatus = document.getElementById('prediction-status');
+                if (predictionStatus) {
+                    predictionStatus.textContent = 'Error';
+                    predictionStatus.className = 'badge bg-danger text-white';
+                }
+                // Still try to fetch historical suggestion even if prediction fails
+                fetchHistoricalSuggestion(municipalityId, barangayId);
+            })
+            .finally(() => {
+                // Reset button state
+                if (refreshButton) {
+                    refreshButton.disabled = false;
+                    refreshButton.innerHTML = '<i class="fas fa-sync-alt me-1"></i> Refresh';
+                }
+            });
+    }
+
+    function updatePredictionDisplay(data) {
+        // Update flood probability gauge
+        const probabilityElement = document.getElementById('flood-probability');
+        if (probabilityElement) {
+            probabilityElement.textContent = Math.round(data.probability || 0) + '%';
+
+            // Update gauge color based on probability
+            const gaugeCircle = probabilityElement.closest('.gauge-circle');
+            if (gaugeCircle) {
+                gaugeCircle.className = 'gauge-circle';
+                const probability = data.probability || 0;
+                if (probability >= 75) {
+                    gaugeCircle.classList.add('high-risk');
+                } else if (probability >= 50) {
+                    gaugeCircle.classList.add('medium-risk');
+                } else if (probability >= 25) {
+                    gaugeCircle.classList.add('low-risk');
+                }
             }
         }
-        display.textContent = text;
-    }
 
-    // --- DATA FETCHING & UI UPDATES ---
-    function refreshAll() {
-        updateSummaryStats();
-        updateHistoricalChart();
-        updatePredictionModel();
-        updateAffectedBarangays();
-        updateDecisionSupport(); // This is the new function to fix the issue
-    }
-
-    async function updateSummaryStats() {
-        const rainfallEl = document.getElementById('rainfall-24h');
-        const waterLevelEl = document.getElementById('current-water-level');
-        if (!rainfallEl || !waterLevelEl) return;
-
-        rainfallEl.textContent = '...';
-        waterLevelEl.textContent = '...';
-
-        let url = `/api/parameter-status/`;
-        const params = buildLocationParams();
-        if (params) url += `?${params}`;
-
-        try {
-            const response = await fetch(url);
-            if (!response.ok) throw new Error('Failed to fetch summary stats');
-            const data = await response.json();
-
-            const rainfall = data.items.find(i => i.parameter === 'rainfall');
-            const waterLevel = data.items.find(i => i.parameter === 'water_level');
-
-            rainfallEl.textContent = rainfall && rainfall.latest !== null ? `${rainfall.latest.toFixed(1)} mm` : '--';
-            waterLevelEl.textContent = waterLevel && waterLevel.latest !== null ? `${waterLevel.latest.toFixed(2)} m` : '--';
-
-        } catch (error) {
-            console.error("Error updating summary stats:", error);
-            rainfallEl.textContent = 'Error';
-            waterLevelEl.textContent = 'Error';
+        // Update impact
+        const impactElement = document.getElementById('prediction-impact');
+        if (impactElement) {
+            impactElement.textContent = data.impact || 'Unknown';
         }
-    }
 
-    async function updatePredictionModel() {
-        const probabilityEl = document.getElementById('flood-probability');
-        const impactEl = document.getElementById('prediction-impact');
-        const etaEl = document.getElementById('prediction-eta');
-        const factorsEl = document.getElementById('contributing-factors');
-        const statusEl = document.getElementById('prediction-status');
-        const lastTimeEl = document.getElementById('last-prediction-time');
-
-        if (!probabilityEl) return;
-
-        statusEl.textContent = 'Calculating...';
-        statusEl.className = 'badge bg-info text-dark';
-
-        let url = `/api/prediction/`;
-        const params = buildLocationParams();
-        if (params) url += `?${params}`;
-
-        try {
-            const response = await fetch(url);
-            if (!response.ok) throw new Error('Prediction API request failed');
-            const data = await response.json();
-
-            // Update Gauge
-            const probability = data.probability || 0;
-            probabilityEl.textContent = `${probability.toFixed(0)}%`;
-            const gauge = probabilityEl.closest('.prediction-gauge');
-            if (gauge) {
-                gauge.style.setProperty('--gauge-value', probability / 100);
+        // Update ETA
+        const etaElement = document.getElementById('prediction-eta');
+        if (etaElement) {
+            if (data.hours_to_flood) {
+                etaElement.textContent = `In approximately ${data.hours_to_flood} hours`;
+            } else {
+                etaElement.textContent = 'No immediate threat detected';
             }
+        }
 
-            // Update text fields
-            impactEl.textContent = data.impact || 'Not available.';
-            etaEl.textContent = data.hours_to_flood ? `Approx. ${data.hours_to_flood.toFixed(1)} hours` : 'Not applicable.';
-            lastTimeEl.textContent = new Date().toLocaleTimeString();
-
-            // Update contributing factors
+        // Update contributing factors
+        const factorsList = document.getElementById('contributing-factors');
+        if (factorsList) {
+            factorsList.innerHTML = '';
             if (data.contributing_factors && data.contributing_factors.length > 0) {
-                factorsEl.innerHTML = data.contributing_factors.map(f => `<li>${f}</li>`).join('');
+                data.contributing_factors.forEach(factor => {
+                    const li = document.createElement('li');
+                    li.textContent = factor;
+                    factorsList.appendChild(li);
+                });
             } else {
-                factorsEl.innerHTML = '<li>No significant factors identified.</li>';
+                const li = document.createElement('li');
+                li.textContent = 'No significant contributing factors identified';
+                factorsList.appendChild(li);
             }
-
-            // Update status badge
-            statusEl.textContent = data.severity_level > 0 ? getSeverityName(data.severity_level) : 'Normal';
-            statusEl.className = `badge ${getSeverityClass(data.severity_level, 'bg')}`;
-
-        } catch (error) {
-            console.error("Error updating prediction model:", error);
-            statusEl.textContent = 'Error';
-            statusEl.className = 'badge bg-danger';
-            probabilityEl.textContent = '--';
-            impactEl.textContent = 'Could not calculate prediction.';
-            etaEl.textContent = '--';
-            factorsEl.innerHTML = '<li>Error fetching data.</li>';
         }
     }
 
-    async function updateAffectedBarangays() {
-        const tbody = document.getElementById('affected-barangays');
-        if (!tbody) return;
+    function updateAffectedBarangays(barangays) {
+        if (!barangaysBody) return;
+        
+        barangaysBody.innerHTML = '';
 
-        tbody.innerHTML = '<tr><td colspan="4" class="text-center">Loading...</td></tr>';
+        if (barangays.length === 0) {
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td colspan="4" class="text-center p-4">
+                    <i class="fas fa-check-circle text-success fa-2x mb-2"></i>
+                    <p class="mb-0">No barangays currently at risk</p>
+                </td>
+            `;
+            barangaysBody.appendChild(row);
+            return;
+        }
 
-        let url = `/api/prediction/`;
-        const params = buildLocationParams();
-        if (params) url += `?${params}`;
+        barangays.forEach(barangay => {
+            const row = document.createElement('tr');
 
-        try {
-            const response = await fetch(url);
-            if (!response.ok) throw new Error('Prediction API failed');
-            const data = await response.json();
-
-            if (data.affected_barangays && data.affected_barangays.length > 0) {
-                tbody.innerHTML = data.affected_barangays.slice(0, 5).map(b => `
-                    <tr>
-                        <td>${b.name}</td>
-                        <td>${b.population.toLocaleString()}</td>
-                        <td><span class="badge ${getRiskClass(b.risk_level)}">${b.risk_level}</span></td>
-                        <td>${b.evacuation_centers}</td>
-                    </tr>
-                `).join('');
-            } else {
-                tbody.innerHTML = '<tr><td colspan="4" class="text-center">No barangays predicted to be affected.</td></tr>';
+            // Determine risk level styling
+            let riskClass = 'table-light';
+            let riskText = barangay.risk_level || 'Low';
+            let riskBadgeClass = 'secondary';
+            
+            if (barangay.risk_level === 'High') {
+                riskClass = 'table-danger';
+                riskBadgeClass = 'danger';
+            } else if (barangay.risk_level === 'Medium') {
+                riskClass = 'table-warning';
+                riskBadgeClass = 'warning';
             }
 
-        } catch (error) {
-            console.error("Error updating affected barangays:", error);
-            tbody.innerHTML = '<tr><td colspan="4" class="text-center text-danger">Error loading data.</td></tr>';
+            row.className = riskClass;
+            row.innerHTML = `
+                <td>${barangay.name || 'Unknown'}</td>
+                <td>${barangay.population ? barangay.population.toLocaleString() : 'N/A'}</td>
+                <td><span class="badge bg-${riskBadgeClass}">${riskText}</span></td>
+                <td>${barangay.evacuation_centers || 1}</td>
+            `;
+            barangaysBody.appendChild(row);
+        });
+    }
+
+    function updateSummaryStats(data) {
+        // Update 24h rainfall
+        const rainfallElement = document.getElementById('rainfall-24h');
+        if (rainfallElement && data.rainfall_24h !== undefined) {
+            rainfallElement.textContent = `${data.rainfall_24h.toFixed(1)} mm`;
+        }
+
+        // Update current water level
+        const waterLevelElement = document.getElementById('current-water-level');
+        if (waterLevelElement && data.water_level !== undefined) {
+            waterLevelElement.textContent = `${data.water_level.toFixed(2)} m`;
         }
     }
 
-    /**
-     * THIS IS THE FIX: Update the Decision Support card with data from the backend.
-     */
-    async function updateDecisionSupport() {
-        const levelEl = document.getElementById('suggestion-level');
-        const subjectEl = document.getElementById('suggestion-subject');
-        const actionEl = document.getElementById('suggested-action');
-        const reasonsEl = document.getElementById('suggestion-reasons');
+    function fetchHistoricalSuggestion(municipalityId, barangayId, chartType = currentChartType, period = currentPeriod) {
+        // Build API URL for historical suggestion
+        let suggestionUrl = '/api/historical_suggestion/';
+        const params = new URLSearchParams();
+        params.append('type', chartType || 'rainfall');
+        // Use fixed 7-day period for historical comparison
+        params.append('days', '7');
+        if (municipalityId) params.append('municipality_id', municipalityId);
+        if (barangayId) params.append('barangay_id', barangayId);
+        suggestionUrl += '?' + params.toString();
 
-        if (!levelEl) return;
+        // Make API call for historical suggestion
+        fetch(suggestionUrl)
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                // Update decision support section
+                updateDecisionSupport(data);
+            })
+            .catch(error => {
+                console.error('Error fetching historical suggestion:', error);
+                // Update with error state
+                updateDecisionSupport({
+                    subject: 'Decision Support: Unable to Load',
+                    level: 'Error',
+                    level_numeric: 0,
+                    suggested_action: 'Please check system status or try again later.',
+                    reasons: ['Failed to retrieve historical data for decision support.']
+                });
+            });
+    }
 
-        levelEl.textContent = 'Loading...';
-        subjectEl.textContent = 'Analyzing...';
-        actionEl.textContent = 'Please wait...';
-        reasonsEl.innerHTML = '<li>Loading...</li>';
+    function updateDecisionSupport(data) {
+        if (!data) return;
 
-        let url = `/api/historical-suggestion/?type=${state.historicalDataType}&days=${state.historicalPeriod}`;
-        const params = buildLocationParams();
-        if (params) url += `&${params}`;
+        // Update subject
+        const subjectElement = document.getElementById('suggestion-subject');
+        if (subjectElement) {
+            subjectElement.textContent = data.subject || 'No subject available';
+        }
 
-        try {
-            const response = await fetch(url);
-            if (!response.ok) throw new Error('Failed to fetch suggestion');
-            const data = await response.json();
+        // Update level with appropriate badge
+        const levelElement = document.getElementById('suggestion-level');
+        if (levelElement) {
+            levelElement.textContent = data.level || 'Unknown';
+            levelElement.className = 'badge';
+            const levelNumeric = data.level_numeric || 0;
+            if (levelNumeric >= 4) {
+                levelElement.classList.add('bg-danger');
+            } else if (levelNumeric >= 3) {
+                levelElement.classList.add('bg-warning');
+            } else if (levelNumeric >= 1) {
+                levelElement.classList.add('bg-info');
+            } else {
+                levelElement.classList.add('bg-secondary');
+            }
+        }
 
-            levelEl.textContent = data.level || 'Unknown';
-            levelEl.className = `badge ${getSeverityClass(data.level_numeric, 'bg')}`;
-            subjectEl.textContent = data.subject || 'No suggestion available.';
-            actionEl.textContent = data.suggested_action || 'Analysis inconclusive.';
+        // Update suggested action
+        const actionElement = document.getElementById('suggested-action');
+        if (actionElement) {
+            actionElement.textContent = data.suggested_action || 'No action suggested';
+        }
 
+        // Update reasons list
+        const reasonsList = document.getElementById('suggestion-reasons');
+        if (reasonsList) {
+            reasonsList.innerHTML = '';
             if (data.reasons && data.reasons.length > 0) {
-                reasonsEl.innerHTML = data.reasons.map(r => `<li>${r}</li>`).join('');
+                data.reasons.forEach(reason => {
+                    const li = document.createElement('li');
+                    li.textContent = reason;
+                    reasonsList.appendChild(li);
+                });
             } else {
-                reasonsEl.innerHTML = '<li>No specific reasons provided.</li>';
+                const li = document.createElement('li');
+                li.textContent = 'No reasons available';
+                reasonsList.appendChild(li);
             }
-
-        } catch (error) {
-            console.error("Error updating decision support:", error);
-            levelEl.textContent = 'Error';
-            levelEl.className = 'badge bg-danger';
-            subjectEl.textContent = 'Error fetching suggestion.';
-            actionEl.textContent = 'Could not connect to the decision support service.';
-            reasonsEl.innerHTML = '<li>An error occurred.</li>';
         }
     }
 
-    // --- HISTORICAL CHART ---
-    function initHistoricalChart() {
-        const ctx = document.getElementById('historical-chart');
-        if (!ctx || !window.Chart) return;
+    // Auto-refresh every 30 minutes
+    setInterval(refreshPrediction, 30 * 60 * 1000);
 
-        state.historicalChart = new Chart(ctx, {
+    // Load prediction data on page load
+    refreshPrediction();
+
+    function initializeHistoricalChart() {
+        const chartCanvas = document.getElementById('historical-chart');
+        if (!chartCanvas) return;
+
+        const ctx = chartCanvas.getContext('2d');
+        historicalChart = new Chart(ctx, {
             type: 'line',
             data: {
                 labels: [],
-                datasets: [
-                    {
-                        label: 'Current Period',
-                        borderColor: 'rgba(54, 162, 235, 1)',
-                        backgroundColor: 'rgba(54, 162, 235, 0.2)',
-                        data: [],
-                        fill: true,
-                    },
-                    {
-                        label: 'Historical (Last Year)',
-                        borderColor: 'rgba(255, 99, 132, 1)',
-                        backgroundColor: 'rgba(255, 99, 132, 0.2)',
-                        data: [],
-                        fill: true,
-                    }
-                ]
+                datasets: [{
+                    label: 'Rainfall (mm)',
+                    data: [],
+                    borderColor: 'rgb(54, 162, 235)',
+                    backgroundColor: 'rgba(54, 162, 235, 0.1)',
+                    tension: 0.1,
+                    fill: true
+                }]
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
                 scales: {
                     y: {
-                        beginAtZero: true,
-                        title: { display: true, text: 'Rainfall (mm)' }
+                        beginAtZero: true
                     }
                 },
                 plugins: {
-                    legend: { position: 'top' }
+                    legend: {
+                        display: true
+                    }
                 }
             }
         });
     }
 
-    function bindHistoricalChartControls() {
-        const typeButtons = document.querySelectorAll('#btn-rainfall-history, #btn-water-level-history');
-        const periodButtons = document.querySelectorAll('.btn-group button[data-period]');
+    function updateChartButtons(activeType) {
+        const rainfallBtn = document.getElementById('btn-rainfall-history');
+        const waterLevelBtn = document.getElementById('btn-water-level-history');
+        
+        if (rainfallBtn) rainfallBtn.classList.toggle('active', activeType === 'rainfall');
+        if (waterLevelBtn) waterLevelBtn.classList.toggle('active', activeType === 'water_level');
+    }
 
-        typeButtons.forEach(btn => {
-            btn.addEventListener('click', () => {
-                typeButtons.forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
-                state.historicalDataType = btn.id === 'btn-rainfall-history' ? 'rainfall' : 'water_level';
-                updateHistoricalChart();
-                updateDecisionSupport();
-            });
-        });
-
-        periodButtons.forEach(btn => {
-            btn.addEventListener('click', () => {
-                periodButtons.forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
-                state.historicalPeriod = btn.getAttribute('data-period');
-                updateHistoricalChart();
-                updateDecisionSupport();
-            });
+    function updatePeriodButtons(activePeriod) {
+        document.querySelectorAll('.btn-group-sm .btn[data-period]').forEach(button => {
+            button.classList.toggle('active', button.getAttribute('data-period') === activePeriod);
         });
     }
 
-    async function updateHistoricalChart() {
-        if (!state.historicalChart) return;
+    function loadHistoricalData() {
+        const urlParams = new URLSearchParams(window.location.search);
+        const municipalityId = urlParams.get('municipality_id');
+        const barangayId = urlParams.get('barangay_id');
 
-        const chart = state.historicalChart;
-        const unit = state.historicalDataType === 'rainfall' ? 'mm' : 'm';
-        chart.options.scales.y.title.text = `${state.historicalDataType.replace('_', ' ')} (${unit})`;
-
-        let url = `/api/chart-data/?type=${state.historicalDataType}`;
-        const period = state.historicalPeriod;
-
-        if (period === '10') {
-            url += `&limit=10`;
+        let apiUrl = `/api/chart-data/?type=${currentChartType}`;
+        if (currentPeriod === '10') {
+            apiUrl += `&limit=10`;
         } else {
-            url += `&range=${period}d`;
+            apiUrl += `&range=${currentPeriod}d`;
         }
+        if (municipalityId) apiUrl += `&municipality_id=${municipalityId}`;
+        if (barangayId) apiUrl += `&barangay_id=${barangayId}`;
 
-        const params = buildLocationParams();
-        if (params) url += `&${params}`;
-
-        try {
-            const response = await fetch(url);
-            if (!response.ok) throw new Error('Failed to fetch chart data');
-            const data = await response.json();
-
-            chart.data.labels = data.labels.map(l => new Date(l).toLocaleDateString());
-            chart.data.datasets[0].data = data.values;
-            chart.data.datasets[0].label = `Current (${unit})`;
-
-            // Fetch historical data
-            const histUrl = `${url}&historical=true`;
-            const histResponse = await fetch(histUrl);
-            if (!histResponse.ok) throw new Error('Failed to fetch historical chart data');
-            const histData = await histResponse.json();
-            chart.data.datasets[1].data = histData.historical_values;
-            chart.data.datasets[1].label = `Last Year (${unit})`;
-
-            chart.update();
-
-        } catch (error) {
-            console.error("Error updating historical chart:", error);
-        }
+        fetch(apiUrl)
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                updateHistoricalChart(data);
+            })
+            .catch(error => {
+                console.error('Error loading historical data:', error);
+            });
     }
 
-    // --- OTHER CONTROLS ---
-    function bindPredictionControls() {
-        const refreshBtn = document.getElementById('refresh-prediction');
-        if (refreshBtn) {
-            refreshBtn.addEventListener('click', updatePredictionModel);
-        }
-    }
+    function updateHistoricalChart(data) {
+        if (!historicalChart) return;
 
-    // --- UTILITY HELPERS ---
-    function buildLocationParams() {
-        const params = [];
-        if (state.municipalityId) params.push(`municipality_id=${state.municipalityId}`);
-        if (state.barangayId) params.push(`barangay_id=${state.barangayId}`);
-        return params.join('&');
-    }
+        const labels = data.labels_manila || data.labels || [];
+        const values = data.values || [];
 
-    function getSeverityName(level) {
-        const names = { 1: 'Advisory', 2: 'Watch', 3: 'Warning', 4: 'Emergency', 5: 'Catastrophic' };
-        return names[level] || 'Normal';
-    }
+        historicalChart.data.labels = labels;
+        historicalChart.data.datasets[0].data = values;
+        historicalChart.data.datasets[0].label = currentChartType === 'rainfall' ? 'Rainfall (mm)' : 'Water Level (m)';
+        historicalChart.data.datasets[0].borderColor = currentChartType === 'rainfall' ? 'rgb(54, 162, 235)' : 'rgb(255, 99, 132)';
+        historicalChart.data.datasets[0].backgroundColor = currentChartType === 'rainfall' ? 'rgba(54, 162, 235, 0.1)' : 'rgba(255, 99, 132, 0.1)';
 
-    function getSeverityClass(level, prefix = 'alert') {
-        if (level >= 4) return `${prefix}-danger`;
-        if (level === 3) return `${prefix}-warning`;
-        if (level >= 1) return `${prefix}-info`;
-        return `${prefix}-success`;
+        historicalChart.update();
     }
-
-    function getRiskClass(riskLevel) {
-        const level = (riskLevel || '').toLowerCase();
-        if (level === 'high') return 'bg-danger';
-        if (level === 'moderate') return 'bg-warning text-dark';
-        return 'bg-success';
-    }
-
-    // --- START ---
-    initialize();
 });

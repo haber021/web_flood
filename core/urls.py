@@ -4,6 +4,7 @@ from . import views
 from . import views_database
 
 urlpatterns = [
+
     # Authentication URLs
     path('login/', views.CustomLoginView.as_view(), name='login'),
     path('register/', views.register, name='register'),

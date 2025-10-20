@@ -26,6 +26,75 @@ from .forms import SensorForm
 from .notifications import dispatch_notifications_for_alert
 
 
+def get_affected_barangays_by_threshold(severity_level):
+    """
+    Determine affected barangays based on current sensor readings exceeding thresholds
+    for the given severity level.
+
+    Args:
+        severity_level (int): The severity level (1-5) for which to find affected barangays
+
+    Returns:
+        QuerySet: Barangay objects that are affected based on threshold breaches
+    """
+    from .models import ThresholdSetting, SensorData, Barangay
+
+    # Get all threshold settings
+    thresholds = {t.parameter: t for t in ThresholdSetting.objects.all()}
+    if not thresholds:
+        return Barangay.objects.none()
+
+    affected_barangays = set()
+
+    # Map severity level to threshold attribute
+    threshold_attrs = {
+        1: 'advisory_threshold',
+        2: 'watch_threshold',
+        3: 'warning_threshold',
+        4: 'emergency_threshold',
+        5: 'catastrophic_threshold'
+    }
+
+    threshold_attr = threshold_attrs.get(severity_level)
+    if not threshold_attr:
+        return Barangay.objects.none()
+
+    # Check each barangay for threshold breaches
+    for barangay in Barangay.objects.all():
+        has_breach = False
+
+        for param, ts in thresholds.items():
+            # Get the threshold value for this severity level
+            threshold_value = getattr(ts, threshold_attr, None)
+            if threshold_value is None:
+                continue
+
+            # Find the latest sensor reading relevant to this barangay
+            # Priority: barangay-specific -> municipality-wide -> global
+            latest_reading = SensorData.objects.filter(
+                sensor__sensor_type=param, sensor__barangay=barangay
+            ).order_by('-timestamp').first()
+
+            if not latest_reading and barangay.municipality_id:
+                latest_reading = SensorData.objects.filter(
+                    sensor__sensor_type=param, sensor__municipality_id=barangay.municipality_id
+                ).order_by('-timestamp').first()
+
+            if not latest_reading:
+                latest_reading = SensorData.objects.filter(
+                    sensor__sensor_type=param
+                ).order_by('-timestamp').first()
+
+            if latest_reading and latest_reading.value >= threshold_value:
+                has_breach = True
+                break
+
+        if has_breach:
+            affected_barangays.add(barangay.id)
+
+    return Barangay.objects.filter(id__in=affected_barangays)
+
+
 def _iso_timestamp(dt):
     """Return an ISO 8601 UTC timestamp string for a datetime `dt`.
     Handles naive datetimes by making them aware using the project's default timezone.
@@ -219,16 +288,24 @@ def create_alert(request):
         if form.is_valid():
             alert = form.save(commit=False)
             alert.issued_by = request.user
+
+            # Determine affected barangays: use manual selection if provided, else compute by thresholds
             alert.save()
-            # Save many-to-many relationships
-            form.save_m2m()
+            selected_barangays = form.cleaned_data.get('affected_barangays')
+            if selected_barangays and selected_barangays.exists():
+                affected_barangays = selected_barangays
+            else:
+                affected_barangays = get_affected_barangays_by_threshold(alert.severity_level)
+            alert.affected_barangays.set(affected_barangays)
 
             # Check if notifications should be sent immediately or scheduled
             from django.utils import timezone
             current_time = timezone.now()
 
+            affected_names = ', '.join([b.name for b in affected_barangays]) if affected_barangays else 'None'
+
             if alert.scheduled_send_time and alert.scheduled_send_time > current_time:
-                messages.success(request, f"Alert created successfully! Notifications will be sent at {alert.scheduled_send_time.strftime('%Y-%m-%d %H:%M')}.")
+                messages.success(request, f"Alert created successfully! Notifications will be sent at {alert.scheduled_send_time.strftime('%Y-%m-%d %H:%M')}. Affected barangays: {affected_names}")
             else:
                 # Check SMS configuration before dispatching
                 import os
@@ -248,13 +325,13 @@ def create_alert(request):
                     pending_count = sms_logs.filter(status='pending').count()
 
                     if failed_count > 0:
-                        messages.warning(request, f"Alert created successfully! {sent_count} SMS sent, {failed_count} failed (possible rate limits or insufficient credits). Your Twilio credentials are valid but may have reached daily limits.")
+                        messages.warning(request, f"Alert created successfully! {sent_count} SMS sent, {failed_count} failed (possible rate limits or insufficient credits). Your Twilio credentials are valid but may have reached daily limits. Affected barangays: {affected_names}")
                     elif pending_count > 0:
-                        messages.success(request, f"Alert created successfully! SMS notifications are pending (SMS currently disabled). Your Twilio credentials are valid and ready to send messages.")
+                        messages.success(request, f"Alert created successfully! SMS notifications are pending (SMS currently disabled). Your Twilio credentials are valid and ready to send messages. Affected barangays: {affected_names}")
                     else:
-                        messages.success(request, f"Alert created successfully! {sent_count} SMS notifications sent to barangay contacts. Your Twilio credentials are valid and working properly.")
+                        messages.success(request, f"Alert created successfully! {sent_count} SMS notifications sent to barangay contacts. Your Twilio credentials are valid and working properly. Affected barangays: {affected_names}")
                 else:
-                    messages.success(request, "Alert created successfully! SMS notifications are currently disabled. Your Twilio credentials are valid and ready to send messages when enabled.")
+                    messages.success(request, f"Alert created successfully! SMS notifications are currently disabled. Your Twilio credentials are valid and ready to send messages when enabled. Affected barangays: {affected_names}")
 
             return redirect('prediction_page')
         else:
@@ -845,16 +922,65 @@ def weather_dashboard(request):
 
 @login_required
 def add_sensor(request):
-    """View to add a new Sensor via a form (admin/manager only)"""
+    """View to add sensors for all types for a selected barangay (admin/manager only)"""
     # Runtime permission check (avoids decorator ordering issues)
     if not is_admin_or_manager(request.user):
         return HttpResponseForbidden('You do not have permission to add sensors.')
     if request.method == 'POST':
         form = SensorForm(request.POST)
         if form.is_valid():
-            sensor = form.save()
-            messages.success(request, f"Sensor '{sensor.name}' created successfully.")
+            barangay = form.cleaned_data['barangay']
+            municipality = form.cleaned_data['municipality']
+            latitude = form.cleaned_data['latitude']
+            longitude = form.cleaned_data['longitude']
+            active = form.cleaned_data['active']
+            description = form.cleaned_data['description']
+
+            # Define all sensor types
+            sensor_types = [
+                ('temperature', 'Temperature'),
+                ('humidity', 'Humidity'),
+                ('rainfall', 'Rainfall'),
+                ('water_level', 'Water Level'),
+                ('wind_speed', 'Wind Speed'),
+            ]
+
+            created_sensors = []
+            for sensor_type, display_name in sensor_types:
+                # Generate name based on barangay and sensor type, ensuring it doesn't exceed max_length
+                base_name = f"{barangay.name.upper()}_{sensor_type.upper()}"
+                name = base_name[:100]  # Truncate to fit max_length=100
+
+                # Check if sensor already exists
+                existing_sensor = Sensor.objects.filter(
+                    name=name,
+                    sensor_type=sensor_type,
+                    barangay=barangay
+                ).first()
+
+                if existing_sensor:
+                    continue  # Skip if already exists
+
+                # Create new sensor
+                sensor = Sensor.objects.create(
+                    name=name,
+                    sensor_type=sensor_type,
+                    latitude=latitude,
+                    longitude=longitude,
+                    active=active,
+                    municipality=municipality,
+                    barangay=barangay,
+                    description=description
+                )
+                created_sensors.append(sensor)
+
+            if created_sensors:
+                messages.success(request, f"Successfully created {len(created_sensors)} sensors for {barangay.name}.")
+            else:
+                messages.warning(request, f"All sensor types already exist for {barangay.name}.")
             return redirect('dashboard')
+        else:
+            messages.error(request, "Error adding sensors. Please check the form fields and try again.")
     else:
         form = SensorForm()
 

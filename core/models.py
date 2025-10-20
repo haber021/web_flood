@@ -26,7 +26,7 @@ class Sensor(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     last_updated = models.DateTimeField(auto_now=True)
     municipality = models.ForeignKey('Municipality', on_delete=models.CASCADE, related_name='sensors', null=True, blank=True)
-    barangay = models.ForeignKey('Barangay', on_delete=models.CASCADE, related_name='sensors')
+    barangay = models.ForeignKey('Barangay', on_delete=models.CASCADE, related_name='sensors', null=True, blank=True)
     description = models.TextField(blank=True, null=True)  # Add this field
 
     def __str__(self):
